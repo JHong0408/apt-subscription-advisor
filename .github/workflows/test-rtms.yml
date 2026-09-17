@@ -1,0 +1,82 @@
+name: (진단용) RTMS 접속 테스트
+
+# 수동으로만 실행하는 일회성 진단 워크플로우. daily-check.yml과 무관하게 독립적으로
+# 돈다 - RTMS(apis.data.go.kr) 접속이 왜 자꾸 타임아웃/None으로 이어지는지
+# 확인하기 위해, 전체 파이프라인 없이 접속 테스트만 여러 번 반복해서 로그를 남긴다.
+#
+# 확인 후 더 이상 필요 없으면 이 파일은 지워도 된다.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  test-rtms-connectivity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      RTMS_SERVICE_KEY: ${{ secrets.RTMS_SERVICE_KEY }}
+    steps:
+      - name: 러너의 출발 IP / ASN 확인
+        run: |
+          echo "--- 공인 IP ---"
+          curl -s --max-time 10 https://api.ipify.org || echo "(ipify 실패)"
+          echo ""
+          echo "--- IP 상세 정보(ASN/기관/지역) ---"
+          curl -s --max-time 10 https://ipinfo.io/json || echo "(ipinfo 실패)"
+
+      - name: 대조군 - api.odcloud.kr(청약홈) 접속 테스트 3회
+        run: |
+          for i in 1 2 3; do
+            echo "=== [odcloud 대조군] 시도 $i ==="
+            curl -s -o /dev/null --max-time 15 \
+              -w "dns=%{time_namelookup}s connect=%{time_connect}s tls=%{time_appconnect}s total=%{time_total}s http_code=%{http_code}\n" \
+              "https://api.odcloud.kr/api/ApplyhomeInfoDetailSvc/v1/getAPTLttotPblancDetail?page=1&perPage=1&serviceKey=${CHEONGYAK_SERVICE_KEY:-dummy}&returnType=JSON" \
+              || echo "curl exit code: $?"
+            sleep 1
+          done
+        env:
+          CHEONGYAK_SERVICE_KEY: ${{ secrets.CHEONGYAK_SERVICE_KEY }}
+
+      - name: RTMS(apis.data.go.kr) HTTP 접속 테스트 10회
+        run: |
+          for i in $(seq 1 10); do
+            echo "=== [RTMS / HTTP] 시도 $i ==="
+            curl -s -o /dev/null --max-time 15 \
+              -w "dns=%{time_namelookup}s connect=%{time_connect}s total=%{time_total}s http_code=%{http_code}\n" \
+              "http://apis.data.go.kr/1613000/RTMSDataSvcAptTradeDev/getRTMSDataSvcAptTradeDev?serviceKey=${RTMS_SERVICE_KEY}&LAWD_CD=11680&DEAL_YMD=202601&numOfRows=1&pageNo=1" \
+              || echo "curl exit code: $?"
+            sleep 2
+          done
+
+      - name: RTMS(apis.data.go.kr) HTTPS 접속 테스트 10회
+        run: |
+          for i in $(seq 1 10); do
+            echo "=== [RTMS / HTTPS] 시도 $i ==="
+            curl -s -o /dev/null --max-time 15 \
+              -w "dns=%{time_namelookup}s connect=%{time_connect}s tls=%{time_appconnect}s total=%{time_total}s http_code=%{http_code}\n" \
+              "https://apis.data.go.kr/1613000/RTMSDataSvcAptTradeDev/getRTMSDataSvcAptTradeDev?serviceKey=${RTMS_SERVICE_KEY}&LAWD_CD=11680&DEAL_YMD=202601&numOfRows=1&pageNo=1" \
+              || echo "curl exit code: $?"
+            sleep 2
+          done
+
+      - name: 순수 TCP 연결 테스트 (HTTP 계층 없이 포트만)
+        run: |
+          echo "--- apis.data.go.kr:80 (TCP만) ---"
+          for i in 1 2 3; do
+            if timeout 5 bash -c "echo > /dev/tcp/apis.data.go.kr/80" 2>/dev/null; then
+              echo "시도 $i: 연결 성공"
+            else
+              echo "시도 $i: 연결 실패/타임아웃"
+            fi
+          done
+          echo "--- apis.data.go.kr:443 (TCP만) ---"
+          for i in 1 2 3; do
+            if timeout 5 bash -c "echo > /dev/tcp/apis.data.go.kr/443" 2>/dev/null; then
+              echo "시도 $i: 연결 성공"
+            else
+              echo "시도 $i: 연결 실패/타임아웃"
+            fi
+          done
