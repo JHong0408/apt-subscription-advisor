@@ -55,6 +55,21 @@ def _normalize_name(name: str) -> str:
     return name.strip()
 
 
+def _search_query(name: str) -> str:
+    """mhb-blog REST API에 보낼 검색어: 괄호(회차 표기)만 지우고 공백은 그대로 둔다.
+
+    ⚠️ 워드프레스 검색은 실제 글 본문에 있는 그대로 띄어쓰기가 맞아야 매칭된다.
+    _normalize_name()처럼 공백까지 다 지운 문자열("드파인아르티아")을 보내면
+    실제 글에는 그 형태 그대로가 없어서 검색 결과가 0건이 된다(실측으로 확인됨:
+    "드파인아르티아" 검색 0건 vs "드파인 아르티아" 검색 시 정상 매칭).
+    """
+    if not name:
+        return ""
+    name = re.sub(r"\([^)]*\)", "", name)   # 괄호 안(차수 등) 제거
+    name = re.sub(r"\d+\s*차", "", name)      # "3차", "12차" 표기 제거
+    return re.sub(r"\s+", " ", name).strip()  # 공백은 유지, 중복 공백만 정리
+
+
 _ROUND_RE = re.compile(r"\d+\s*차")
 
 
@@ -85,7 +100,7 @@ def search_mhb_blog(house_name: str, per_page: int = 5) -> dict | None:
 
     per_page개까지 후보를 모아서 _pick_best()로 회차까지 맞는 걸 우선 선택한다.
     """
-    query = _normalize_name(house_name)
+    query = _search_query(house_name)
     if not query or len(query) < 2:
         return None
 
