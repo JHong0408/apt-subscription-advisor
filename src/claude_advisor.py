@@ -79,7 +79,7 @@ def get_recommendation_multi(analyzed_types: list[dict], profile: dict) -> str:
         },
         json={
             "model": MODEL,
-            "max_tokens": 700,
+            "max_tokens": 1500,
             "messages": [{"role": "user", "content": prompt}],
         },
         timeout=30,
@@ -91,4 +91,15 @@ def get_recommendation_multi(analyzed_types: list[dict], profile: dict) -> str:
         block["text"] for block in data.get("content", [])
         if block.get("type") == "text"
     ]
-    return "\n".join(text_parts).strip() or "(추천 텍스트를 받지 못했습니다.)"
+    text = "\n".join(text_parts).strip()
+    if text:
+        return text
+
+    # 텍스트가 비었을 때는 뭉개지 말고 실제 원인(stop_reason, 받은 블록 타입)을
+    # 그대로 Slack 메시지에 노출시켜서 다음번엔 바로 원인을 알 수 있게 한다.
+    stop_reason = data.get("stop_reason")
+    block_types = [block.get("type") for block in data.get("content", [])]
+    return (
+        f"(추천 텍스트를 받지 못했습니다. stop_reason={stop_reason!r}, "
+        f"content_block_types={block_types})"
+    )
