@@ -1,13 +1,15 @@
 """
 매일 실행되는 진입점.
 
-1. 청약홈에서 신규 무순위/임의공급 공고 수집
-2. 서울/경기(profile.preferences.prefer_regions) + 최소 면적 조건으로 필터링
-3. 이미 알림 보낸 공고는 건너뜀 (seen_notices.json)
-4. 국토부 실거래가로 안전마진 계산
-5. 대략적 DSR/LTV로 필요 현금 계산
-6. Claude에게 개인화 추천 요청
-7. Slack으로 결과 전송
+1. 청약홈에서 신규 무순위/임의공급 "공고 개요" 수집 (면적/분양가 없음)
+2. 서울/경기(profile.preferences.prefer_regions)로 지역 필터링
+3. 공고마다 주택형별 상세(면적/분양가)를 별도 조회해서 "공고+주택형" 단위로 펼침,
+   최소 면적 조건은 여기서 적용 (전용면적 미달 타입만 있는 공고는 자동 제외)
+4. 이미 알림 보낸 "공고+주택형" 조합은 건너뜀 (seen_notices.json)
+5. 국토부 실거래가로 안전마진 계산
+6. 대략적 DSR/LTV로 필요 현금 계산
+7. Claude에게 개인화 추천 요청
+8. Slack으로 결과 전송
 """
 from __future__ import annotations
 
@@ -45,8 +47,11 @@ def save_seen_ids(ids: set[str]) -> None:
     SEEN_FILE.write_text(json.dumps(sorted(ids), ensure_ascii=False, indent=2))
 
 
-def collect_candidate_notices(min_area_sqm: float, prefer_regions: list[str] | None = None) -> list[dict]:
-    """무순위/임의공급 공고를 모아 관심 지역(서울/경기) + 면적 조건으로 거른다.
+def collect_candidate_notices(prefer_regions: list[str] | None = None) -> list[dict]:
+    """무순위/임의공급 "공고 개요"를 모아 관심 지역(서울/경기)으로 거른다.
+
+    면적 조건은 여기서 적용하지 않는다 - 공고 개요 엔드포인트에는 면적이 없고,
+    실제 면적은 expand_with_house_types()가 주택형별 상세를 조회해야 알 수 있다.
 
     prefer_regions: profile["preferences"]["prefer_regions"] 값을 그대로 전달.
     예: ["서울"], ["경기"], ["서울", "경기"]. 비어있으면 서울+경기 전체 허용.
@@ -62,17 +67,54 @@ def collect_candidate_notices(min_area_sqm: float, prefer_regions: list[str] | N
 
         for raw in raw_list:
             notice = cheongyak_api.parse_notice(raw)
+            notice["_endpoint_key"] = endpoint_key  # 주택형 상세 조회 시 어느 Mdl 엔드포인트를 쓸지 기억
             if not cheongyak_api.is_target_region(notice.get("address", ""), prefer_regions):
                 continue
-            area = notice.get("area_sqm")
-            try:
-                if area is not None and float(area) < min_area_sqm:
-                    continue
-            except (TypeError, ValueError):
-                pass
             candidates.append(notice)
 
     return candidates
+
+
+def expand_with_house_types(notice: dict, min_area_sqm: float) -> list[dict]:
+    """공고 하나를 "공고+주택형(면적/분양가)" 단위로 펼친다.
+
+    - 주택형 상세 조회가 성공하면: min_area_sqm 이상인 타입만 남긴다.
+      (예: 39㎡ 초소형만 있는 공고는 빈 리스트 반환 -> 자동 제외)
+    - 주택형 상세 조회 자체가 실패하거나 데이터가 아직 없으면: 면적/분양가 없이
+      원본 공고 그대로 1건만 반환해서, 최소한 "이런 공고가 떴다"는 알림은 가도록 한다.
+
+    반환되는 각 dict는 notice의 사본 + house_ty/area_sqm/price_manwon/variant_id.
+    variant_id는 seen_notices.json 중복 방지 키로 쓰인다 (공고번호:주택형).
+    """
+    endpoint_key = notice.get("_endpoint_key")
+    pblanc_no = notice.get("notice_id")
+
+    raw_models: list[dict] = []
+    if endpoint_key and pblanc_no:
+        try:
+            raw_models = cheongyak_api.fetch_models(endpoint_key, pblanc_no)
+        except Exception as e:  # noqa: BLE001
+            print(f"[main] 주택형 상세 조회 실패({pblanc_no}): {e}")
+
+    if not raw_models:
+        fallback = dict(notice)
+        fallback["variant_id"] = f"{pblanc_no}:unknown"
+        return [fallback]
+
+    variants: list[dict] = []
+    for raw in raw_models:
+        model = cheongyak_api.parse_house_type(raw)
+        area = model.get("area_sqm")
+        if area is not None and area < min_area_sqm:
+            continue
+        variant = dict(notice)
+        variant["house_ty"] = model.get("house_ty")
+        variant["area_sqm"] = area
+        variant["price_manwon"] = model.get("price_manwon")
+        variant["variant_id"] = f"{pblanc_no}:{model.get('house_ty') or 'unknown'}"
+        variants.append(variant)
+
+    return variants
 
 
 def analyze_notice(notice: dict, profile: dict) -> tuple[dict, dict]:
@@ -118,20 +160,25 @@ def main() -> None:
     min_area = profile.get("preferences", {}).get("min_area_sqm", 46)
     prefer_regions = profile.get("preferences", {}).get("prefer_regions", ["서울", "경기"])
 
-    candidates = collect_candidate_notices(min_area, prefer_regions)
-    new_candidates = [
-        n for n in candidates
-        if n.get("notice_id") and n["notice_id"] not in seen_ids
+    notices = collect_candidate_notices(prefer_regions)
+
+    variants: list[dict] = []
+    for notice in notices:
+        variants.extend(expand_with_house_types(notice, min_area))
+
+    new_variants = [
+        v for v in variants
+        if v.get("variant_id") and v["variant_id"] not in seen_ids
     ]
 
-    print(f"[main] 전체 후보 {len(candidates)}건, 신규 {len(new_candidates)}건")
+    print(f"[main] 공고 개요 {len(notices)}건 -> 주택형별로 펼친 후보 {len(variants)}건, 신규 {len(new_variants)}건")
 
-    if not new_candidates:
+    if not new_variants:
         print("[main] 신규 공고 없음, 종료")
         return
 
     log_lines = []
-    for notice in new_candidates:
+    for notice in new_variants:
         margin, loan = analyze_notice(notice, profile)
         try:
             recommendation = claude_advisor.get_recommendation(notice, margin, loan, profile)
@@ -141,7 +188,7 @@ def main() -> None:
         message = notifier.format_notice_report(notice, margin, loan, recommendation)
         notifier.send_slack_message(message)
 
-        seen_ids.add(notice["notice_id"])
+        seen_ids.add(notice["variant_id"])
         log_lines.append(json.dumps(
             {"notice": notice, "margin": margin, "loan": loan, "recommendation": recommendation},
             ensure_ascii=False,
@@ -149,7 +196,7 @@ def main() -> None:
 
     save_seen_ids(seen_ids)
     RUN_LOG_FILE.write_text("\n".join(log_lines), encoding="utf-8")
-    print(f"[main] {len(new_candidates)}건 알림 전송 완료")
+    print(f"[main] {len(new_variants)}건 알림 전송 완료")
 
 
 if __name__ == "__main__":

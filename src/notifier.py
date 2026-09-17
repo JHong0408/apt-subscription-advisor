@@ -18,13 +18,19 @@ def send_slack_message(text: str) -> None:
 
 def format_notice_report(notice: dict, margin: dict, loan: dict, recommendation: str) -> str:
     price_manwon = notice.get("price_manwon")
-    return (
-        f"*{notice.get('house_name')}* ({notice.get('address')})\n"
-        f"> 유형: {notice.get('supply_type')} · 면적: {notice.get('area_sqm')}㎡ · "
-        f"분양가: {price_manwon}만원\n"
+    house_ty = notice.get("house_ty")
+    notice_url = notice.get("notice_url")
+    lines = [
+        f"*{notice.get('house_name')}* ({notice.get('address')})",
+        f"> 공급구분: {notice.get('supply_type') or '확인필요'}"
+        f" · 주택형: {house_ty or '(주택형 상세 미확인)'}"
+        f" · 면적: {notice.get('area_sqm')}㎡"
+        f" · 분양가: {price_manwon}만원",
         f"> 인근 평균 실거래가: {margin.get('avg_market_price')} "
-        f"(격차 {margin.get('margin_pct_vs_avg')}%)\n"
-        f"> 추정 필요 현금: {loan.get('estimated_required_cash')}\n"
-        f"\n*🤖 AI 추천*\n{recommendation}\n"
-        f"{'-' * 40}"
-    )
+        f"(격차 {margin.get('margin_pct_vs_avg')}%)",
+        f"> 추정 필요 현금: {loan.get('estimated_required_cash')}",
+    ]
+    if notice_url:
+        lines.append(f"> 공고 원문: {notice_url}")
+    lines.append(f"\n*🤖 AI 추천*\n{recommendation}\n{'-' * 40}")
+    return "\n".join(lines)

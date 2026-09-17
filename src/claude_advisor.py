@@ -30,7 +30,8 @@ def build_prompt(notice: dict, margin: dict, loan: dict, profile: dict) -> str:
 # 공고 정보
 - 단지명: {notice.get('house_name')}
 - 위치: {notice.get('address')}
-- 공급유형: {notice.get('supply_type')}
+- 공급구분: {notice.get('supply_type')}
+- 주택형 코드: {notice.get('house_ty')}
 - 전용면적: {notice.get('area_sqm')}㎡
 - 분양가: {notice.get('price_manwon')}만원
 - 공고일: {notice.get('recruit_date')}

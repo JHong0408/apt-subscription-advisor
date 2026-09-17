@@ -4,27 +4,37 @@
 데이터 출처: 공공데이터포털 "한국부동산원_청약홈 분양정보 조회 서비스"
              (odcloud 기반, https://api.odcloud.kr)
 
-⚠️ 중요: ENDPOINTS 중 apt_general 은 실제 사용 사례로 확인된 값이고,
-         apt_remainder / arbitrary_supply 는 명명 규칙 추정치입니다.
-         README.md의 "2) 청약홈 엔드포인트 확인" 절차대로 Swagger에서
-         한 번 검증한 뒤 여기 값을 바로잡아 주세요.
+이 API는 "공고 개요"와 "주택형별 상세(면적/분양가)"를 서로 다른 엔드포인트로
+나눠서 제공한다. 실제 운영 중인 공개 구현체(GitHub: Jung-Yunho/cheongyak-alert)로
+교차 확인한 값:
+- *Detail 엔드포인트: 공고 개요만 반환 (단지명/주소/공급구분 등). 면적·분양가 없음.
+- *Mdl 엔드포인트: PBLANC_NO(공고번호)로 필터링해서 주택형별 상세(면적 포함된
+  HOUSE_TY 코드, 분양가 LTTOT_TOP_AMOUNT)를 반환.
+따라서 공고 하나당 반드시 Detail → Mdl 두 번 호출해야 면적/분양가를 알 수 있다.
 """
 from __future__ import annotations
 
 import os
+import re
 import requests
 
 BASE_URL = "https://api.odcloud.kr/api/ApplyhomeInfoDetailSvc/v1"
 
 ENDPOINTS = {
-    # 확인됨 (GitHub 공개 사례에서 실사용 확인: getAPTLttotPblancDetail)
-    "apt_general": "/getAPTLttotPblancDetail",
-    # TODO: Swagger에서 확인 필요 (추정: 무순위/잔여세대)
-    "apt_remainder": "/getRemndrLttotPblancDetail",
-    # TODO: Swagger에서 확인 필요 (추정: 임의공급) - 확실치 않으면 우선
-    #       apt_general 결과에서 공급유형 필드로 필터링하는 방식으로 대체 가능
-    "arbitrary_supply": "/getAsignSpclctSttusDetail",
+    "apt_general": "/getAPTLttotPblancDetail",       # 일반분양 공고 개요
+    "apt_remainder": "/getRemndrLttotPblancDetail",  # 무순위/잔여세대(+불법행위 재공급) 공고 개요
+    "arbitrary_supply": "/getOPTLttotPblancDetail",  # 임의공급 공고 개요
 }
+
+# 공고 개요 엔드포인트 → 그 공고의 주택형별 상세(면적/분양가) 엔드포인트
+MDL_ENDPOINTS = {
+    "apt_general": "/getAPTLttotPblancMdl",
+    "apt_remainder": "/getRemndrLttotPblancMdl",
+    "arbitrary_supply": "/getOPTLttotPblancMdl",
+}
+
+# HOUSE_TY 코드(예: "084.7402A")에서 앞자리 숫자(전용면적)만 뽑아내는 패턴
+_AREA_RE = re.compile(r"^(\d+(?:\.\d+)?)")
 
 # 서울 25개 자치구 이름으로 대략 매칭할 때 쓰는 키워드 (주소 문자열 매칭용)
 SEOUL_GU_LIST = [
@@ -89,6 +99,29 @@ def fetch_notices(endpoint_key: str, page: int = 1, per_page: int = 100) -> list
     data = resp.json()
 
     # odcloud 표준 응답은 보통 {"data": [...], "currentCount": N, "matchCount": N, "page": N, ...}
+    return data.get("data", [])
+
+
+def fetch_models(endpoint_key: str, pblanc_no: str, page: int = 1, per_page: int = 100) -> list[dict]:
+    """해당 공고(PBLANC_NO)의 주택형별 상세(면적/공급세대수/분양가) 목록을 가져온다.
+
+    odcloud API의 필터 문법 cond[FIELD::EQ]=값 을 사용해 PBLANC_NO로 좁힌다.
+    """
+    if endpoint_key not in MDL_ENDPOINTS:
+        raise CheongyakAPIError(f"알 수 없는 endpoint_key: {endpoint_key}")
+
+    url = BASE_URL + MDL_ENDPOINTS[endpoint_key]
+    params = {
+        "page": page,
+        "perPage": per_page,
+        "serviceKey": _get_service_key(),
+        "returnType": "JSON",
+        "cond[PBLANC_NO::EQ]": pblanc_no,
+    }
+
+    resp = requests.get(url, params=params, timeout=15)
+    resp.raise_for_status()
+    data = resp.json()
     return data.get("data", [])
 
 
@@ -165,23 +198,44 @@ def is_target_region(address: str, prefer_regions: list[str] | None = None) -> b
 
 
 def parse_notice(raw: dict) -> dict:
-    """API 원본 응답 1건을 파이프라인 공통 포맷으로 변환.
+    """공고 개요(*Detail) API 응답 1건을 파이프라인 공통 포맷으로 변환.
 
-    ⚠️ 아래 필드명(HOUSE_NM, HSSPLY_ADRES 등)은 청약홈 API에서 흔히 쓰이는
-    이름 규칙을 따른 추정치입니다. Swagger에서 실제 응답 예시를 한 번 보고
-    다르면 이 함수만 고치면 됩니다 (다른 파일은 영향 없음).
+    실제 응답으로 확인된 필드명 기준(2026-09-17 실제 API 호출로 검증):
+    HOUSE_NM, HSSPLY_ADRES, HOUSE_SECD_NM(공급구분: 무순위/불법행위 재공급 등),
+    RCRIT_PBLANC_DE, PBLANC_NO, PBLANC_URL 등.
+
+    ⚠️ 이 엔드포인트는 면적/분양가를 포함하지 않는다 — 그건 fetch_models()로
+    PBLANC_NO를 넘겨 별도 조회해야 한다 (main.py의 expand_with_house_types 참고).
     """
     return {
         "raw": raw,
-        "house_name": raw.get("HOUSE_NM") or raw.get("houseName"),
-        "address": raw.get("HSSPLY_ADRES") or raw.get("address"),
-        "supply_type": raw.get("SPCLT_LWRESD_HOPE_AT") or raw.get("supplyType"),
-        "recruit_date": raw.get("RCRIT_PBLANC_DE") or raw.get("recruitDate"),
-        "area_sqm": raw.get("SUPLY_AR") or raw.get("area"),
-        # ⚠️ 단위 미확인: 청약홈 분양가 필드는 통상 "만원" 단위로 내려오는 경우가
-        # 많습니다(예: "95000" = 9억 5천만원). 이 값은 그대로 두고, 원 단위 변환은
-        # main.py의 _to_int()에서 일괄 처리합니다. 실제 응답 받아보고 억/만원 여부가
-        # 다르면 그쪽 변환 로직만 고치면 됩니다.
-        "price_manwon": raw.get("LTTOT_TOP_AMOUNT") or raw.get("price"),
-        "notice_id": raw.get("PBLANC_NO") or raw.get("noticeId"),
+        "house_name": raw.get("HOUSE_NM"),
+        "address": raw.get("HSSPLY_ADRES"),
+        "supply_type": raw.get("HOUSE_SECD_NM"),
+        "recruit_date": raw.get("RCRIT_PBLANC_DE"),
+        "notice_url": raw.get("PBLANC_URL"),
+        # 아래 둘은 이 엔드포인트에 없음 - fetch_models()로 채워지기 전까지는 None
+        "area_sqm": None,
+        "price_manwon": None,
+        "notice_id": raw.get("PBLANC_NO"),
+    }
+
+
+def parse_area_from_house_ty(house_ty: str | None) -> float | None:
+    """HOUSE_TY 코드(예: "084.7402A")에서 전용면적(㎡)만 추출."""
+    if not house_ty:
+        return None
+    m = _AREA_RE.match(house_ty.strip())
+    return float(m.group(1)) if m else None
+
+
+def parse_house_type(raw: dict) -> dict:
+    """주택형별 상세(*Mdl) API 응답 1건을 파이프라인 공통 포맷으로 변환."""
+    house_ty = raw.get("HOUSE_TY")
+    return {
+        "raw": raw,
+        "house_ty": house_ty,
+        "area_sqm": parse_area_from_house_ty(house_ty),
+        # LTTOT_TOP_AMOUNT는 만원 단위 문자열(콤마 포함 가능) - main.py의 _to_int()에서 정수 변환
+        "price_manwon": raw.get("LTTOT_TOP_AMOUNT"),
     }
