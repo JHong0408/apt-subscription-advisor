@@ -38,9 +38,14 @@ def _strip_html(text: str) -> str:
 
 
 def _normalize_name(name: str) -> str:
-    """단지명 비교용 정규화: 괄호(차수 표기)/공백/구분자를 지운다.
+    """단지명 비교용(넓게 찾기) 정규화: 괄호(차수 표기)/공백/구분자를 지운다.
 
     예: "더 리치먼드 미아(3차)" -> "더리치먼드미아"
+
+    ⚠️ 회차 정보를 지워버리므로, 검색/후보 수집에만 쓰고 최종 선택에는 쓰지
+    않는다 - "2차" 공고에 "1차" 글이 걸려도 여기서는 구분이 안 된다. 여러
+    후보 중 실제로 회차까지 맞는 걸 고르는 건 _pick_best()가 원본(정규화 전)
+    제목으로 따로 한다.
     """
     if not name:
         return ""
@@ -50,8 +55,36 @@ def _normalize_name(name: str) -> str:
     return name.strip()
 
 
-def search_mhb_blog(house_name: str, per_page: int = 3) -> dict | None:
-    """mhb-blog.com REST API로 단지명 검색. 못 찾거나 실패하면 None."""
+_ROUND_RE = re.compile(r"\d+\s*차")
+
+
+def _extract_round(name: str) -> str | None:
+    """단지명 원본에서 회차 표기("2차", "12차" 등)만 뽑는다. 없으면 None."""
+    m = _ROUND_RE.search(name or "")
+    return re.sub(r"\s+", "", m.group(0)) if m else None
+
+
+def _pick_best(candidates: list[dict], house_name: str) -> dict:
+    """넓게 찾은 후보들 중, 회차까지 일치하는 걸 우선 선택한다.
+
+    candidates는 이미 _normalize_name 기준으로 "관련 있다"고 판단된 것들이고,
+    여기서는 원본(정규화 전) 제목에 공고의 회차 표기가 그대로 들어있는지만 본다.
+    회차 표기가 없거나, 일치하는 후보가 하나도 없으면 기존 방식대로 첫 번째
+    후보(API 관련도순/최신순)를 그대로 쓴다.
+    """
+    round_marker = _extract_round(house_name)
+    if round_marker:
+        for c in candidates:
+            if round_marker in c["title"]:
+                return c
+    return candidates[0]
+
+
+def search_mhb_blog(house_name: str, per_page: int = 5) -> dict | None:
+    """mhb-blog.com REST API로 단지명 검색. 못 찾거나 실패하면 None.
+
+    per_page개까지 후보를 모아서 _pick_best()로 회차까지 맞는 걸 우선 선택한다.
+    """
     query = _normalize_name(house_name)
     if not query or len(query) < 2:
         return None
@@ -67,15 +100,14 @@ def search_mhb_blog(house_name: str, per_page: int = 3) -> dict | None:
     except (requests.RequestException, ValueError):
         return None
 
-    if not posts:
-        return None
+    candidates = []
+    for post in posts:
+        url = post.get("link")
+        title = _strip_html(post.get("title", {}).get("rendered", ""))
+        if url and title:
+            candidates.append({"source": "mhb-blog.com", "title": title, "url": url})
 
-    post = posts[0]
-    url = post.get("link")
-    title = _strip_html(post.get("title", {}).get("rendered", ""))
-    if not url or not title:
-        return None
-    return {"source": "mhb-blog.com", "title": title, "url": url}
+    return _pick_best(candidates, house_name) if candidates else None
 
 
 _POST_SITEMAP_RE = re.compile(r"sitemap-posts-post-\d+\.xml$")
@@ -140,16 +172,22 @@ def build_homedubu_index(max_posts: int = 40) -> list[dict]:
 
 
 def find_homedubu_reference(house_name: str, index: list[dict]) -> dict | None:
-    """미리 만들어둔 homedubu 인덱스에서 단지명과 겹치는 게시글을 찾는다."""
+    """미리 만들어둔 homedubu 인덱스에서 단지명과 겹치는 게시글을 찾는다.
+
+    인덱스 전체에서 관련 있어 보이는 후보를 다 모은 뒤, _pick_best()로 회차까지
+    맞는 걸 우선 선택한다 (없으면 인덱스 순서상 첫 번째 = 최신 게시글).
+    """
     query = _normalize_name(house_name)
     if not query or len(query) < 2:
         return None
 
-    for entry in index:
-        normalized_title = _normalize_name(entry["title"])
-        if query in normalized_title or normalized_title in query:
-            return {"source": "homedubu.com", "title": entry["title"], "url": entry["url"]}
-    return None
+    candidates = [
+        {"source": "homedubu.com", "title": entry["title"], "url": entry["url"]}
+        for entry in index
+        if query in _normalize_name(entry["title"]) or _normalize_name(entry["title"]) in query
+    ]
+
+    return _pick_best(candidates, house_name) if candidates else None
 
 
 def find_all_references(house_name: str, homedubu_index: list[dict]) -> list[dict]:
