@@ -1,0 +1,57 @@
+name: Daily Apartment Subscription Check
+
+on:
+  schedule:
+    # 매일 한국시간(KST, UTC+9) 오전 8시 = UTC 전날 23:00
+    - cron: '0 23 * * *'
+  workflow_dispatch: {}  # 필요할 때 수동으로도 실행 가능 (Actions 탭에서 Run workflow)
+
+permissions:
+  contents: write  # seen_notices.json을 커밋해서 "이미 알림 보낸 공고" 상태를 유지하기 위함
+
+jobs:
+  check-and-notify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run subscription check
+        env:
+          CHEONGYAK_SERVICE_KEY: ${{ secrets.CHEONGYAK_SERVICE_KEY }}
+          RTMS_SERVICE_KEY: ${{ secrets.RTMS_SERVICE_KEY }}
+          CLAUDE_API_KEY: ${{ secrets.CLAUDE_API_KEY }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          MY_PROFILE_JSON: ${{ secrets.MY_PROFILE_JSON }}
+        run: python src/main.py
+
+      - name: Upload run log (for debugging)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: run-log
+          path: run_log.jsonl
+          retention-days: 14
+          if-no-files-found: ignore
+
+      - name: Persist "seen notices" state
+        if: always()
+        run: |
+          if [ -f seen_notices.json ] && [ -n "$(git status --porcelain seen_notices.json)" ]; then
+            git config user.name "apt-subscription-bot"
+            git config user.email "actions@users.noreply.github.com"
+            git add seen_notices.json
+            git commit -m "chore: update seen notices [skip ci]"
+            git push
+          else
+            echo "변경 없음, 커밋 스킵"
+          fi

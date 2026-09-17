@@ -1,0 +1,36 @@
+{
+  "_comment": "이 파일은 예시입니다. 실제 값을 채운 뒤 GitHub Secrets(MY_PROFILE_JSON)에만 붙여넣으세요. 절대 이 파일 자체를 실제 값으로 채워서 git commit 하지 마세요.",
+
+  "budget": {
+    "cash_available_krw": 500000000,
+    "note": "실현 가능한 현금 총액 (본인 기준으로 수정)"
+  },
+
+  "income": {
+    "annual_salary_krw": 70000000,
+    "note": "연소득 - DSR 대략치 계산에 사용됨"
+  },
+
+  "subscription_status": {
+    "subscription_score": 29,
+    "is_homeowner": false,
+    "used_first_time_buyer_benefit": false,
+    "reapplication_restricted_until": null,
+    "note": "reapplication_restricted_until는 재당첨제한 걸려있다면 'YYYY-MM-DD', 없으면 null"
+  },
+
+  "location": {
+    "company_address": "서울특별시 중구 세종대로 00",
+    "company_lat": 37.5665,
+    "company_lng": 126.9780,
+    "max_commute_minutes": 60
+  },
+
+  "preferences": {
+    "avoid_building_age_over_years": 20,
+    "min_area_sqm": 46,
+    "prefer_regions": ["서울", "경기"],
+    "prefer_regions_note": "\"서울\", \"경기\" 중 원하는 것만 넣으면 그 지역만 필터링됨 (예: [\"서울\"]만 넣으면 서울만)",
+    "purpose": "실거주 우선, 조건 좋으면 투자도 고려"
+  }
+}
