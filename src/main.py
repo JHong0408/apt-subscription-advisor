@@ -8,7 +8,9 @@
 4. 이미 알림 보낸 "공고+주택형" 조합은 건너뜀 (seen_notices.json)
 5. 국토부 실거래가로 타입별 안전마진 계산
 6. 타입별 대략적 DSR/LTV로 필요 현금 계산
-7. 공고 하나당(타입이 몇 개든) Claude 호출 1번 + Slack 메시지 1개로 묶어서 전송
+7. homedubu.com / mhb-blog.com 두 청약 분석 블로그에 관련 게시글이 있으면
+   "참고 자료" 링크로 같이 붙임 (reference_finder.py, 없어도 그냥 생략)
+8. 공고 하나당(타입이 몇 개든) Claude 호출 1번 + Slack 메시지 1개로 묶어서 전송
    (타입별로 따로 보내면 공고당 메시지가 여러 개로 쪼개져서 스팸처럼 되는 걸 방지)
 """
 from __future__ import annotations
@@ -25,6 +27,7 @@ import rtms_api
 import analyzer
 import claude_advisor
 import notifier
+import reference_finder
 
 SEEN_FILE = Path("seen_notices.json")
 RUN_LOG_FILE = Path("run_log.jsonl")
@@ -193,6 +196,15 @@ def main() -> None:
         print("[main] 신규 공고 없음, 종료")
         return
 
+    # homedubu.com 참고 자료 검색은 실행당 1번만 인덱스를 만들어서 재사용한다
+    # (공고마다 다시 크롤링하면 요청 수가 너무 많아짐 - reference_finder.py 참고).
+    # 실패해도(사이트 접속 불가 등) 빈 리스트로 조용히 넘어가고 알림 자체는 계속 나간다.
+    try:
+        homedubu_index = reference_finder.build_homedubu_index()
+    except Exception as e:  # noqa: BLE001
+        print(f"[main] homedubu.com 참고 자료 인덱스 생성 실패: {e}")
+        homedubu_index = []
+
     log_lines = []
     for notice_id, type_variants in new_by_notice.items():
         # 공고 하나 안의 타입들을 각각 분석(면적/분양가별로 실거래가 비교가 다르므로)한 뒤,
@@ -207,7 +219,14 @@ def main() -> None:
         except Exception as e:  # noqa: BLE001
             recommendation = f"(AI 추천 생성 실패: {e})"
 
-        message = notifier.format_notice_report_multi(analyzed_types, recommendation)
+        house_name = type_variants[0].get("house_name")
+        try:
+            references = reference_finder.find_all_references(house_name, homedubu_index)
+        except Exception as e:  # noqa: BLE001
+            print(f"[main] 참고 자료 검색 실패({house_name}): {e}")
+            references = []
+
+        message = notifier.format_notice_report_multi(analyzed_types, recommendation, references)
         notifier.send_slack_message(message)
 
         for v in type_variants:
@@ -221,6 +240,7 @@ def main() -> None:
                     for a in analyzed_types
                 ],
                 "recommendation": recommendation,
+                "references": references,
             },
             ensure_ascii=False,
         ))

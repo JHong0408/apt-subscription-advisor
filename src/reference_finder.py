@@ -1,0 +1,167 @@
+"""
+homedubu.com / mhb-blog.com 두 청약 분석 블로그에서, 알림 보내는 단지와 관련된
+게시글이 있으면 찾아서 Slack 메시지의 "참고 자료" 링크로 붙이기 위한 모듈.
+
+두 사이트 모두 워드프레스 기반이지만, robots.txt 정책이 달라서 접근 방식을 다르게 했다.
+
+- mhb-blog.com: robots.txt가 /wp-json/ REST API를 막지 않아서, 워드프레스 표준
+  REST API(`/wp-json/wp/v2/posts?search=...`)로 바로 검색한다.
+
+- homedubu.com: robots.txt가 검색(`/?s=*`), REST API(`/wp-json/`),
+  카테고리 페이지네이션(`/*/page/*`)을 전부 막아놔서 위 방법을 못 쓴다. 대신
+  robots.txt가 허용하는 sitemap(`wp-sitemap.xml`)으로 최근 게시글 URL 목록만
+  가져온 뒤, 그 게시글 페이지의 <title>만 개별로 읽어서 단지명이 들어있는지
+  대조한다. 매 공고마다 이 크롤링을 반복하면 비효율적이라, main.py에서
+  파이프라인 실행당 한 번만 인덱스를 만들어서 재사용한다.
+
+⚠️ 둘 다 "찾으면 좋은" 보조 참고자료일 뿐이라, 실패하거나 못 찾아도
+   (네트워크 오류, 게시글이 실제로 없음) main.py 흐름은 그대로 진행되게
+   전부 조용히 None/빈 리스트를 반환한다.
+"""
+from __future__ import annotations
+
+import html
+import re
+import xml.etree.ElementTree as ET
+
+import requests
+
+_SITEMAP_NS = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+
+MHB_BLOG_API = "https://mhb-blog.com/wp-json/wp/v2/posts"
+HOMEDUBU_SITEMAP_INDEX = "https://homedubu.com/wp-sitemap.xml"
+
+
+def _strip_html(text: str) -> str:
+    """워드프레스 API가 돌려주는 title.rendered(HTML 엔티티 포함)를 순수 텍스트로."""
+    return html.unescape(re.sub(r"<[^>]+>", "", text or "")).strip()
+
+
+def _normalize_name(name: str) -> str:
+    """단지명 비교용 정규화: 괄호(차수 표기)/공백/구분자를 지운다.
+
+    예: "더 리치먼드 미아(3차)" -> "더리치먼드미아"
+    """
+    if not name:
+        return ""
+    name = re.sub(r"\([^)]*\)", "", name)   # 괄호 안(차수 등) 제거
+    name = re.sub(r"\d+\s*차", "", name)      # "3차", "12차" 표기 제거
+    name = re.sub(r"[\s\-_·]+", "", name)     # 공백/구분자 제거
+    return name.strip()
+
+
+def search_mhb_blog(house_name: str, per_page: int = 3) -> dict | None:
+    """mhb-blog.com REST API로 단지명 검색. 못 찾거나 실패하면 None."""
+    query = _normalize_name(house_name)
+    if not query or len(query) < 2:
+        return None
+
+    try:
+        resp = requests.get(
+            MHB_BLOG_API,
+            params={"search": query, "per_page": per_page},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        posts = resp.json()
+    except (requests.RequestException, ValueError):
+        return None
+
+    if not posts:
+        return None
+
+    post = posts[0]
+    url = post.get("link")
+    title = _strip_html(post.get("title", {}).get("rendered", ""))
+    if not url or not title:
+        return None
+    return {"source": "mhb-blog.com", "title": title, "url": url}
+
+
+_POST_SITEMAP_RE = re.compile(r"sitemap-posts-post-\d+\.xml$")
+
+
+def _get_homedubu_post_sitemap_urls() -> list[str]:
+    """sitemap 인덱스에서 "게시글(post)" 타입 서브 sitemap URL만 뽑는다.
+
+    워드프레스 기본 sitemap은 `wp-sitemap-posts-post-1.xml`(글), `wp-sitemap-posts-page-1.xml`
+    (고정 페이지), `wp-sitemap-taxonomies-category-1.xml`(카테고리) 등으로 이름이 나뉘는데,
+    "post"라는 단어만으로 필터링하면 "posts-page"에도 "post"가 부분 문자열로 들어있어서
+    같이 걸려버린다. 그래서 "posts-post-숫자.xml" 패턴으로 정확히 맞춘다.
+    """
+    resp = requests.get(HOMEDUBU_SITEMAP_INDEX, timeout=10)
+    resp.raise_for_status()
+    root = ET.fromstring(resp.content)
+    return [
+        loc.text for loc in root.findall(".//sm:sitemap/sm:loc", _SITEMAP_NS)
+        if loc.text and _POST_SITEMAP_RE.search(loc.text)
+    ]
+
+
+def build_homedubu_index(max_posts: int = 40) -> list[dict]:
+    """최근 게시글 max_posts개의 {title, url}을 모아온다.
+
+    파이프라인 실행당 딱 한 번만 호출하도록(main.py) 설계됨 - 공고마다 매번
+    다시 크롤링하면 요청 수가 너무 많아진다.
+    """
+    try:
+        sitemap_urls = _get_homedubu_post_sitemap_urls()
+    except (requests.RequestException, ET.ParseError):
+        return []
+
+    entries: list[tuple[str, str]] = []
+    for sitemap_url in sitemap_urls:
+        try:
+            resp = requests.get(sitemap_url, timeout=10)
+            resp.raise_for_status()
+            root = ET.fromstring(resp.content)
+        except (requests.RequestException, ET.ParseError):
+            continue
+        for url_el in root.findall(".//sm:url", _SITEMAP_NS):
+            loc = url_el.find("sm:loc", _SITEMAP_NS)
+            lastmod = url_el.find("sm:lastmod", _SITEMAP_NS)
+            if loc is not None and loc.text:
+                entries.append((lastmod.text if lastmod is not None else "", loc.text))
+
+    entries.sort(reverse=True)  # lastmod 최신순
+
+    index: list[dict] = []
+    for _, url in entries[:max_posts]:
+        try:
+            resp = requests.get(url, timeout=10)
+            resp.raise_for_status()
+        except requests.RequestException:
+            continue
+        m = re.search(r"<title[^>]*>(.*?)</title>", resp.text, re.IGNORECASE | re.DOTALL)
+        if m:
+            index.append({"title": _strip_html(m.group(1)), "url": url})
+
+    return index
+
+
+def find_homedubu_reference(house_name: str, index: list[dict]) -> dict | None:
+    """미리 만들어둔 homedubu 인덱스에서 단지명과 겹치는 게시글을 찾는다."""
+    query = _normalize_name(house_name)
+    if not query or len(query) < 2:
+        return None
+
+    for entry in index:
+        normalized_title = _normalize_name(entry["title"])
+        if query in normalized_title or normalized_title in query:
+            return {"source": "homedubu.com", "title": entry["title"], "url": entry["url"]}
+    return None
+
+
+def find_all_references(house_name: str, homedubu_index: list[dict]) -> list[dict]:
+    """두 사이트에서 찾은 참고 자료를 합쳐서 반환한다 (있는 것만, 순서: mhb-blog -> homedubu)."""
+    refs = []
+
+    mhb = search_mhb_blog(house_name)
+    if mhb:
+        refs.append(mhb)
+
+    homedubu = find_homedubu_reference(house_name, homedubu_index)
+    if homedubu:
+        refs.append(homedubu)
+
+    return refs

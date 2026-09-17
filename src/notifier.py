@@ -124,11 +124,18 @@ def send_slack_message(text: str) -> None:
     print(text)
 
 
-def format_notice_report_multi(analyzed_types: list[dict], recommendation: str) -> str:
+def format_notice_report_multi(
+    analyzed_types: list[dict],
+    recommendation: str,
+    references: list[dict] | None = None,
+) -> str:
     """공고 하나(타입 여러 개 가능)를 Slack 메시지 1개로 통합 포맷.
 
     analyzed_types: [{"variant": notice_dict, "margin": {...}, "loan": {...}}, ...]
     (공고 자체는 다 동일하고, house_ty/area_sqm/price_manwon만 타입별로 다름)
+    references: reference_finder.find_all_references()가 찾아준
+      [{"source": "mhb-blog.com", "title": "...", "url": "..."}, ...] 목록.
+      없거나 못 찾았으면 None/빈 리스트 - 이 경우 섹션 자체를 생략한다.
     """
     base = analyzed_types[0]["variant"]
     notice_url = base.get("notice_url")
@@ -149,5 +156,11 @@ def format_notice_report_multi(analyzed_types: list[dict], recommendation: str) 
 
     if notice_url:
         lines.append(f"> 공고 원문: {notice_url}")
+
+    if references:
+        lines.append("\n*🔎 참고 자료*")
+        for ref in references:
+            lines.append(f"> • <{ref['url']}|{ref['title']}> _({ref['source']})_")
+
     lines.append(f"\n*🤖 AI 추천*\n{recommendation}\n{'-' * 40}")
     return "\n".join(lines)
