@@ -6,10 +6,10 @@
 3. 공고마다 주택형별 상세(면적/분양가)를 별도 조회해서 "공고+주택형" 단위로 펼침,
    최소 면적 조건은 여기서 적용 (전용면적 미달 타입만 있는 공고는 자동 제외)
 4. 이미 알림 보낸 "공고+주택형" 조합은 건너뜀 (seen_notices.json)
-5. 국토부 실거래가로 안전마진 계산
-6. 대략적 DSR/LTV로 필요 현금 계산
-7. Claude에게 개인화 추천 요청
-8. Slack으로 결과 전송
+5. 국토부 실거래가로 타입별 안전마진 계산
+6. 타입별 대략적 DSR/LTV로 필요 현금 계산
+7. 공고 하나당(타입이 몇 개든) Claude 호출 1번 + Slack 메시지 1개로 묶어서 전송
+   (타입별로 따로 보내면 공고당 메시지가 여러 개로 쪼개져서 스팸처럼 되는 걸 방지)
 """
 from __future__ import annotations
 
@@ -117,6 +117,21 @@ def expand_with_house_types(notice: dict, min_area_sqm: float) -> list[dict]:
     return variants
 
 
+def group_new_variants_by_notice(variants: list[dict], seen_ids: set[str]) -> dict[str, list[dict]]:
+    """아직 알림 안 보낸 variant만 골라서 notice_id 기준으로 묶는다.
+
+    반환값의 각 리스트는 같은 공고(notice_id)의 신규 주택형들이고, 이걸 한데 묶어서
+    공고당 Slack 메시지 1개 + Claude 호출 1번으로 처리한다.
+    """
+    groups: dict[str, list[dict]] = {}
+    for v in variants:
+        vid = v.get("variant_id")
+        if not vid or vid in seen_ids:
+            continue
+        groups.setdefault(v["notice_id"], []).append(v)
+    return groups
+
+
 def analyze_notice(notice: dict, profile: dict) -> tuple[dict, dict]:
     region = cheongyak_api.extract_region(notice.get("address", ""))
     area = notice.get("area_sqm")
@@ -166,37 +181,53 @@ def main() -> None:
     for notice in notices:
         variants.extend(expand_with_house_types(notice, min_area))
 
-    new_variants = [
-        v for v in variants
-        if v.get("variant_id") and v["variant_id"] not in seen_ids
-    ]
+    new_by_notice = group_new_variants_by_notice(variants, seen_ids)
+    total_new_types = sum(len(v) for v in new_by_notice.values())
 
-    print(f"[main] 공고 개요 {len(notices)}건 -> 주택형별로 펼친 후보 {len(variants)}건, 신규 {len(new_variants)}건")
+    print(
+        f"[main] 공고 개요 {len(notices)}건 -> 주택형별로 펼친 후보 {len(variants)}건, "
+        f"신규 공고 {len(new_by_notice)}건(타입 {total_new_types}개)"
+    )
 
-    if not new_variants:
+    if not new_by_notice:
         print("[main] 신규 공고 없음, 종료")
         return
 
     log_lines = []
-    for notice in new_variants:
-        margin, loan = analyze_notice(notice, profile)
+    for notice_id, type_variants in new_by_notice.items():
+        # 공고 하나 안의 타입들을 각각 분석(면적/분양가별로 실거래가 비교가 다르므로)한 뒤,
+        # Claude 호출과 Slack 메시지는 공고당 1번으로 묶는다.
+        analyzed_types = []
+        for v in type_variants:
+            margin, loan = analyze_notice(v, profile)
+            analyzed_types.append({"variant": v, "margin": margin, "loan": loan})
+
         try:
-            recommendation = claude_advisor.get_recommendation(notice, margin, loan, profile)
+            recommendation = claude_advisor.get_recommendation_multi(analyzed_types, profile)
         except Exception as e:  # noqa: BLE001
             recommendation = f"(AI 추천 생성 실패: {e})"
 
-        message = notifier.format_notice_report(notice, margin, loan, recommendation)
+        message = notifier.format_notice_report_multi(analyzed_types, recommendation)
         notifier.send_slack_message(message)
 
-        seen_ids.add(notice["variant_id"])
+        for v in type_variants:
+            seen_ids.add(v["variant_id"])
+
         log_lines.append(json.dumps(
-            {"notice": notice, "margin": margin, "loan": loan, "recommendation": recommendation},
+            {
+                "notice_id": notice_id,
+                "types": [
+                    {"notice": a["variant"], "margin": a["margin"], "loan": a["loan"]}
+                    for a in analyzed_types
+                ],
+                "recommendation": recommendation,
+            },
             ensure_ascii=False,
         ))
 
     save_seen_ids(seen_ids)
     RUN_LOG_FILE.write_text("\n".join(log_lines), encoding="utf-8")
-    print(f"[main] {len(new_variants)}건 알림 전송 완료")
+    print(f"[main] {len(new_by_notice)}건 알림 전송 완료 (타입 {total_new_types}개 포함)")
 
 
 if __name__ == "__main__":

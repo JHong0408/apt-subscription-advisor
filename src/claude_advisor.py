@@ -22,30 +22,37 @@ def _get_api_key() -> str:
     return key
 
 
-def build_prompt(notice: dict, margin: dict, loan: dict, profile: dict) -> str:
-    return f"""다음은 한 아파트 청약 공고와, 그것을 신청할지 고민 중인 사람의 정보다.
+def build_prompt_multi(analyzed_types: list[dict], profile: dict) -> str:
+    """공고 하나(타입 여러 개 가능)를 한 번에 판단받기 위한 프롬프트.
+
+    analyzed_types: [{"variant": notice_dict, "margin": {...}, "loan": {...}}, ...]
+    (공고 자체는 다 동일하고, house_ty/area_sqm/price_manwon만 타입별로 다름)
+    """
+    base = analyzed_types[0]["variant"]
+
+    type_blocks = []
+    for a in analyzed_types:
+        v, margin, loan = a["variant"], a["margin"], a["loan"]
+        type_blocks.append(f"""
+## 주택형 {v.get('house_ty') or '(미확인)'}
+- 전용면적: {v.get('area_sqm')}㎡
+- 분양가: {v.get('price_manwon')}만원
+- 인근 평균 실거래가: {margin.get('avg_market_price')} (비교 {margin.get('comparable_count')}건)
+- 분양가 대비 격차: {margin.get('margin_vs_avg')} ({margin.get('margin_pct_vs_avg')}%)
+- 추정 대출 가능액: {loan.get('estimated_loan_capacity')}
+- 추정 필요 현금: {loan.get('estimated_required_cash')}""")
+
+    return f"""다음은 한 아파트 청약 공고(타입이 여러 개일 수 있음)와, 그것을 신청할지 고민 중인 사람의 정보다.
 이 사람 입장에서 "신청할 만한지"를 판단해서 한국어로 짧고 구체적으로 답해줘.
-장점/단점을 나열하지 말고, 이 사람의 조건에 비춰 실제로 도움이 되는 결론과 이유를 3~5문장으로.
+타입이 여러 개면 그중 어떤 타입이 가장 나은지, 혹은 전부 비추천인지까지 명시해줘.
+장점/단점을 나열하지 말고, 이 사람의 조건에 비춰 실제로 도움이 되는 결론과 이유를 5~8문장으로.
 
 # 공고 정보
-- 단지명: {notice.get('house_name')}
-- 위치: {notice.get('address')}
-- 공급구분: {notice.get('supply_type')}
-- 주택형 코드: {notice.get('house_ty')}
-- 전용면적: {notice.get('area_sqm')}㎡
-- 분양가: {notice.get('price_manwon')}만원
-- 공고일: {notice.get('recruit_date')}
-
-# 시장 비교 (인근 실거래가 기준)
-- 비교 가능 거래 건수: {margin.get('comparable_count')}
-- 인근 평균 실거래가: {margin.get('avg_market_price')}
-- 인근 최고 실거래가: {margin.get('max_market_price')}
-- 분양가 대비 격차: {margin.get('margin_vs_avg')} ({margin.get('margin_pct_vs_avg')}%)
-
-# 대략적 자금 계산 (근사치, 참고용)
-- 추정 대출 가능액: {loan.get('estimated_loan_capacity')}
-- 추정 필요 현금: {loan.get('estimated_required_cash')}
-- 제한 요인: {loan.get('binding_constraint')}
+- 단지명: {base.get('house_name')}
+- 위치: {base.get('address')}
+- 공급구분: {base.get('supply_type')}
+- 공고일: {base.get('recruit_date')}
+{"".join(type_blocks)}
 
 # 신청자 프로필
 - 가용 현금: {profile.get('budget', {}).get('cash_available_krw')}
@@ -59,8 +66,9 @@ def build_prompt(notice: dict, margin: dict, loan: dict, profile: dict) -> str:
 """
 
 
-def get_recommendation(notice: dict, margin: dict, loan: dict, profile: dict) -> str:
-    prompt = build_prompt(notice, margin, loan, profile)
+def get_recommendation_multi(analyzed_types: list[dict], profile: dict) -> str:
+    """공고 하나(타입 여러 개 가능)에 대해 Claude 호출 1번으로 통합 추천을 받는다."""
+    prompt = build_prompt_multi(analyzed_types, profile)
 
     resp = requests.post(
         ANTHROPIC_API_URL,
@@ -71,7 +79,7 @@ def get_recommendation(notice: dict, margin: dict, loan: dict, profile: dict) ->
         },
         json={
             "model": MODEL,
-            "max_tokens": 500,
+            "max_tokens": 700,
             "messages": [{"role": "user", "content": prompt}],
         },
         timeout=30,
