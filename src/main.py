@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -31,6 +32,29 @@ import reference_finder
 
 SEEN_FILE = Path("seen_notices.json")
 RUN_LOG_FILE = Path("run_log.jsonl")
+
+KST = timezone(timedelta(hours=9))
+
+
+def today_kst() -> date:
+    """GitHub Actions 러너는 UTC로 도니까, 마감일 비교는 반드시 KST 기준으로 해야 한다."""
+    return datetime.now(KST).date()
+
+
+def is_reception_open(notice: dict, today: date) -> bool:
+    """접수 종료일(reception_end_date)이 이미 지난 공고는 걸러낸다.
+
+    종료일 정보가 없거나 형식이 이상하면(파싱 실패) 임의로 걸러내지 않고 일단
+    통과시킨다 - "모른다"를 "마감됐다"로 잘못 단정하지 않기 위함.
+    """
+    end_date_str = notice.get("reception_end_date")
+    if not end_date_str:
+        return True
+    try:
+        end_date = date.fromisoformat(end_date_str)
+    except ValueError:
+        return True
+    return end_date >= today
 
 
 def load_profile() -> dict:
@@ -56,10 +80,16 @@ def collect_candidate_notices(prefer_regions: list[str] | None = None) -> list[d
     면적 조건은 여기서 적용하지 않는다 - 공고 개요 엔드포인트에는 면적이 없고,
     실제 면적은 expand_with_house_types()가 주택형별 상세를 조회해야 알 수 있다.
 
+    접수 마감일이 이미 지난 공고도 여기서 걸러낸다 - seen_notices.json에 기록이
+    안 남아있으면(예: 이전 실행이 도중에 죽어서 저장을 못한 경우) 마감이 한참
+    지난 공고도 "신규"로 잡혀서 계속 알림이 갈 수 있기 때문.
+
     prefer_regions: profile["preferences"]["prefer_regions"] 값을 그대로 전달.
     예: ["서울"], ["경기"], ["서울", "경기"]. 비어있으면 서울+경기 전체 허용.
     """
     candidates: list[dict] = []
+    today = today_kst()
+    expired_count = 0
 
     for endpoint_key in ("apt_remainder", "arbitrary_supply"):
         try:
@@ -73,7 +103,13 @@ def collect_candidate_notices(prefer_regions: list[str] | None = None) -> list[d
             notice["_endpoint_key"] = endpoint_key  # 주택형 상세 조회 시 어느 Mdl 엔드포인트를 쓸지 기억
             if not cheongyak_api.is_target_region(notice.get("address", ""), prefer_regions):
                 continue
+            if not is_reception_open(notice, today):
+                expired_count += 1
+                continue
             candidates.append(notice)
+
+    if expired_count:
+        print(f"[main] 접수 마감 지난 공고 {expired_count}건 제외")
 
     return candidates
 
