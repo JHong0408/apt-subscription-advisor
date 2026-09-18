@@ -101,15 +101,37 @@ def fetch_notices(endpoint_key: str, page: int = 1, per_page: int = 100) -> list
     # odcloud 표준 응답은 보통 {"data": [...], "currentCount": N, "matchCount": N, "page": N, ...}
     match_count = data.get("matchCount")
     current_count = data.get("currentCount")
-    if match_count is not None and match_count > per_page:
-        # matchCount(전체 건수)가 한 페이지 분량(per_page)보다 많다는 건 - 우리가
-        # page=1만 호출하는 지금 구조로는 뒷페이지 데이터를 놓치고 있다는 뜻.
+    if page == 1 and match_count is not None and match_count > per_page:
+        # matchCount(전체 건수)가 한 페이지 분량(per_page)보다 많다는 건 - page=1만
+        # 호출하면 뒷페이지 데이터를 놓친다는 뜻. fetch_all_notices()를 쓰면 해결됨.
         print(
             f"[cheongyak_api] {endpoint_key}: 전체 {match_count}건 중 이번 페이지 "
             f"{current_count}건만 받아옴 (page={page}, perPage={per_page}) - 뒷페이지 존재"
         )
 
     return data.get("data", [])
+
+
+def fetch_all_notices(endpoint_key: str, per_page: int = 100, max_pages: int = 50) -> list[dict]:
+    """이 엔드포인트의 공고를 첫 페이지부터 끝까지 전부 순회해서 가져온다.
+
+    apt_remainder/arbitrary_supply는 계속 누적되는 아카이브라 전체 건수가
+    수백~수천 건까지 늘어난다(실측: apt_remainder 1691건, arbitrary_supply 658건,
+    2026-09-18 기준). page=1(기본 100건)만 보면 최신 공고가 뒷페이지에 밀려나
+    누락될 수 있어서, 이 함수로 전체를 다 받아온 뒤 main.py에서 지역/마감일로
+    걸러내야 한다. max_pages는 API가 이상한 값을 줘서 무한루프 도는 걸 막는
+    안전장치일 뿐, 정상 상황에서는 걸릴 일이 없다.
+    """
+    all_items: list[dict] = []
+    for page in range(1, max_pages + 1):
+        page_items = fetch_notices(endpoint_key, page=page, per_page=per_page)
+        if not page_items:
+            break
+        all_items.extend(page_items)
+        if len(page_items) < per_page:
+            break  # 마지막 페이지
+
+    return all_items
 
 
 def fetch_models(endpoint_key: str, pblanc_no: str, page: int = 1, per_page: int = 100) -> list[dict]:

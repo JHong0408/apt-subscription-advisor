@@ -95,7 +95,7 @@ def collect_candidate_notices(prefer_regions: list[str] | None = None) -> list[d
 
     for endpoint_key in ("apt_remainder", "arbitrary_supply"):
         try:
-            raw_list = cheongyak_api.fetch_notices(endpoint_key)
+            raw_list = cheongyak_api.fetch_all_notices(endpoint_key)
         except Exception as e:  # noqa: BLE001 - 개인용 배치라 단순 로깅 후 계속 진행
             print(f"[main] {endpoint_key} 조회 실패, 건너뜀: {e}")
             continue

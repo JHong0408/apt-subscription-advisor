@@ -31,6 +31,10 @@ _SITEMAP_NS = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
 MHB_BLOG_API = "https://mhb-blog.com/wp-json/wp/v2/posts"
 HOMEDUBU_SITEMAP_INDEX = "https://homedubu.com/wp-sitemap.xml"
 
+# mhb-blog는 requests 기본 User-Agent("python-requests/...")를 봇으로 보고
+# 403으로 차단한다(실측 확인, 2026-09-18) - 브라우저처럼 보이는 UA로 우회.
+_BROWSER_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+
 
 def _strip_html(text: str) -> str:
     """워드프레스 API가 돌려주는 title.rendered(HTML 엔티티 포함)를 순수 텍스트로."""
@@ -109,6 +113,7 @@ def search_mhb_blog(house_name: str, per_page: int = 5) -> dict | None:
         resp = requests.get(
             MHB_BLOG_API,
             params={"search": query, "per_page": per_page},
+            headers=_BROWSER_HEADERS,
             timeout=10,
         )
         resp.raise_for_status()
