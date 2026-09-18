@@ -232,6 +232,7 @@ def main() -> None:
     seen_ids = load_seen_ids()
     min_area = profile.get("preferences", {}).get("min_area_sqm", 46)
     prefer_regions = profile.get("preferences", {}).get("prefer_regions", ["서울", "경기"])
+    print(f"[main][추적] 실제 사용되는 prefer_regions={prefer_regions!r}")
 
     notices = collect_candidate_notices(prefer_regions)
 
