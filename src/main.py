@@ -106,10 +106,21 @@ def collect_candidate_notices(prefer_regions: list[str] | None = None) -> list[d
         for raw in raw_list:
             notice = cheongyak_api.parse_notice(raw)
             notice["_endpoint_key"] = endpoint_key  # 주택형 상세 조회 시 어느 Mdl 엔드포인트를 쓸지 기억
+
+            # TODO: 임시 추적 로그 - 원인 확인되면 지워도 됨
+            _hn = notice.get("house_name") or ""
+            if "수지자이" in _hn or "월드메르디앙" in _hn:
+                print(f"[main][추적] 발견: house_name={_hn!r} address={notice.get('address')!r} "
+                      f"reception_end_date={notice.get('reception_end_date')!r} endpoint={endpoint_key}")
+
             if not cheongyak_api.is_target_region(notice.get("address", ""), prefer_regions):
+                if "수지자이" in _hn or "월드메르디앙" in _hn:
+                    print(f"[main][추적] {_hn!r} -> 지역 필터에서 제외됨")
                 out_of_region_count += 1
                 continue
             if not is_reception_open(notice, today):
+                if "수지자이" in _hn or "월드메르디앙" in _hn:
+                    print(f"[main][추적] {_hn!r} -> 접수 마감 필터에서 제외됨")
                 expired_count += 1
                 continue
             candidates.append(notice)
