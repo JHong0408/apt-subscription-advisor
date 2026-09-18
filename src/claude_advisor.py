@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import json
+import re
 import requests
 
 ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
@@ -64,6 +65,75 @@ def build_prompt_multi(analyzed_types: list[dict], profile: dict) -> str:
 - 통근 허용 시간: {profile.get('location', {}).get('max_commute_minutes')}분
 - 선호 조건: {profile.get('preferences', {})}
 """
+
+
+def find_mhb_blog_reference(house_name: str) -> dict | None:
+    """Claude의 서버사이드 web_search 툴로 mhb-blog.com에서 이 단지 관련 글을 찾는다.
+
+    우리 서버(GitHub Actions, Azure IP)에서 mhb-blog.com에 직접 요청하면 403으로
+    막힌다(WAF가 데이터센터 IP를 막는 것으로 추정, 2026-09-18 확인). 대신 Claude API의
+    web_search 툴을 쓰면 검색이 Anthropic 인프라에서 나가므로 이 차단을 우회할 수 있다.
+    allowed_domains로 mhb-blog.com에만 검색을 한정한다.
+
+    못 찾거나 실패하면 None (참고자료는 "있으면 좋은" 보조 정보라 실패해도 조용히 넘어감).
+    """
+    prompt = f"""mhb-blog.com 사이트에서 "{house_name}" 아파트 청약과 관련된 글이 있는지 찾아줘.
+정확히 이 단지에 대한 글이 있으면 그 글의 URL과 제목을, 없으면 둘 다 null로 해서
+다른 설명 없이 아래 JSON 한 줄만 답해:
+
+{{"url": "https://mhb-blog.com/..." 또는 null, "title": "글 제목" 또는 null}}"""
+
+    try:
+        resp = requests.post(
+            ANTHROPIC_API_URL,
+            headers={
+                "x-api-key": _get_api_key(),
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={
+                "model": MODEL,
+                "max_tokens": 1024,
+                "tools": [{
+                    "type": "web_search_20260209",
+                    "name": "web_search",
+                    "allowed_domains": ["mhb-blog.com"],
+                    "max_uses": 3,
+                }],
+                "messages": [{"role": "user", "content": prompt}],
+            },
+            timeout=45,  # 웹검색이 포함돼서 일반 텍스트 응답보다 오래 걸릴 수 있음
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except requests.RequestException as e:
+        print(f"[claude_advisor] mhb-blog 웹검색 실패({house_name!r}): {e}")
+        return None
+
+    text = "\n".join(
+        block["text"] for block in data.get("content", [])
+        if block.get("type") == "text"
+    ).strip()
+
+    m = re.search(r'\{.*"url".*\}', text, re.DOTALL)
+    if not m:
+        print(f"[claude_advisor] mhb-blog 웹검색: 응답에서 JSON을 못 찾음 ({house_name!r}): {text!r}")
+        return None
+
+    try:
+        result = json.loads(m.group(0))
+    except json.JSONDecodeError as e:
+        print(f"[claude_advisor] mhb-blog 웹검색: JSON 파싱 실패({house_name!r}): {e}")
+        return None
+
+    url = result.get("url")
+    title = result.get("title")
+    if not url:
+        print(f"[claude_advisor] mhb-blog 웹검색: {house_name!r} 관련 글 없음")
+        return None
+
+    print(f"[claude_advisor] mhb-blog 웹검색: {house_name!r} -> {title!r} ({url})")
+    return {"source": "mhb-blog.com", "title": title or url, "url": url}
 
 
 def get_recommendation_multi(analyzed_types: list[dict], profile: dict) -> str:

@@ -2,17 +2,19 @@
 homedubu.com / mhb-blog.com 두 청약 분석 블로그에서, 알림 보내는 단지와 관련된
 게시글이 있으면 찾아서 Slack 메시지의 "참고 자료" 링크로 붙이기 위한 모듈.
 
-두 사이트 모두 워드프레스 기반이지만, robots.txt 정책이 달라서 접근 방식을 다르게 했다.
-
-- mhb-blog.com: robots.txt가 /wp-json/ REST API를 막지 않아서, 워드프레스 표준
-  REST API(`/wp-json/wp/v2/posts?search=...`)로 바로 검색한다.
-
 - homedubu.com: robots.txt가 검색(`/?s=*`), REST API(`/wp-json/`),
-  카테고리 페이지네이션(`/*/page/*`)을 전부 막아놔서 위 방법을 못 쓴다. 대신
-  robots.txt가 허용하는 sitemap(`wp-sitemap.xml`)으로 최근 게시글 URL 목록만
-  가져온 뒤, 그 게시글 페이지의 <title>만 개별로 읽어서 단지명이 들어있는지
-  대조한다. 매 공고마다 이 크롤링을 반복하면 비효율적이라, main.py에서
-  파이프라인 실행당 한 번만 인덱스를 만들어서 재사용한다.
+  카테고리 페이지네이션(`/*/page/*`)을 전부 막아놔서, robots.txt가 허용하는
+  sitemap(`wp-sitemap.xml`)으로 최근 게시글 URL 목록만 가져온 뒤, 그 게시글
+  페이지의 <title>만 개별로 읽어서 단지명이 들어있는지 대조한다. 매 공고마다
+  이 크롤링을 반복하면 비효율적이라, main.py에서 파이프라인 실행당 한 번만
+  인덱스를 만들어서 재사용한다.
+
+- mhb-blog.com: 원래는 여기도 워드프레스 REST API(`/wp-json/wp/v2/posts?search=`)로
+  직접 검색했는데, GitHub Actions(Azure) IP를 WAF가 403으로 차단해서(실측 확인,
+  2026-09-18) 이 파일에서는 더 이상 mhb-blog를 직접 호출하지 않는다. 대신
+  claude_advisor.find_mhb_blog_reference()가 Claude API의 web_search 툴(Anthropic
+  인프라에서 나가는 요청이라 차단을 우회함)로 찾아온 결과를 find_all_references()가
+  인자로 받아서 homedubu 결과와 합친다.
 
 ⚠️ 둘 다 "찾으면 좋은" 보조 참고자료일 뿐이라, 실패하거나 못 찾아도
    (네트워크 오류, 게시글이 실제로 없음) main.py 흐름은 그대로 진행되게
@@ -28,12 +30,7 @@ import requests
 
 _SITEMAP_NS = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
 
-MHB_BLOG_API = "https://mhb-blog.com/wp-json/wp/v2/posts"
 HOMEDUBU_SITEMAP_INDEX = "https://homedubu.com/wp-sitemap.xml"
-
-# mhb-blog는 requests 기본 User-Agent("python-requests/...")를 봇으로 보고
-# 403으로 차단한다(실측 확인, 2026-09-18) - 브라우저처럼 보이는 UA로 우회.
-_BROWSER_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
 
 def _strip_html(text: str) -> str:
@@ -59,21 +56,6 @@ def _normalize_name(name: str) -> str:
     return name.strip()
 
 
-def _search_query(name: str) -> str:
-    """mhb-blog REST API에 보낼 검색어: 괄호(회차 표기)만 지우고 공백은 그대로 둔다.
-
-    ⚠️ 워드프레스 검색은 실제 글 본문에 있는 그대로 띄어쓰기가 맞아야 매칭된다.
-    _normalize_name()처럼 공백까지 다 지운 문자열("드파인아르티아")을 보내면
-    실제 글에는 그 형태 그대로가 없어서 검색 결과가 0건이 된다(실측으로 확인됨:
-    "드파인아르티아" 검색 0건 vs "드파인 아르티아" 검색 시 정상 매칭).
-    """
-    if not name:
-        return ""
-    name = re.sub(r"\([^)]*\)", "", name)   # 괄호 안(차수 등) 제거
-    name = re.sub(r"\d+\s*차", "", name)      # "3차", "12차" 표기 제거
-    return re.sub(r"\s+", " ", name).strip()  # 공백은 유지, 중복 공백만 정리
-
-
 _ROUND_RE = re.compile(r"\d+\s*차")
 
 
@@ -97,45 +79,6 @@ def _pick_best(candidates: list[dict], house_name: str) -> dict:
             if round_marker in c["title"]:
                 return c
     return candidates[0]
-
-
-def search_mhb_blog(house_name: str, per_page: int = 5) -> dict | None:
-    """mhb-blog.com REST API로 단지명 검색. 못 찾거나 실패하면 None.
-
-    per_page개까지 후보를 모아서 _pick_best()로 회차까지 맞는 걸 우선 선택한다.
-    """
-    query = _search_query(house_name)
-    if not query or len(query) < 2:
-        print(f"[reference_finder] mhb-blog: 검색어가 너무 짧아 스킵 (house_name={house_name!r})")
-        return None
-
-    try:
-        resp = requests.get(
-            MHB_BLOG_API,
-            params={"search": query, "per_page": per_page},
-            headers=_BROWSER_HEADERS,
-            timeout=10,
-        )
-        resp.raise_for_status()
-        posts = resp.json()
-    except (requests.RequestException, ValueError) as e:
-        print(f"[reference_finder] mhb-blog 검색 실패(query={query!r}): {e}")
-        return None
-
-    candidates = []
-    for post in posts:
-        url = post.get("link")
-        title = _strip_html(post.get("title", {}).get("rendered", ""))
-        if url and title:
-            candidates.append({"source": "mhb-blog.com", "title": title, "url": url})
-
-    if not candidates:
-        print(f"[reference_finder] mhb-blog: query={query!r} 검색 결과 0건 (데이터 자체가 없음)")
-        return None
-
-    best = _pick_best(candidates, house_name)
-    print(f"[reference_finder] mhb-blog: query={query!r} 검색 {len(candidates)}건 중 선택 -> {best['title']!r}")
-    return best
 
 
 _POST_SITEMAP_RE = re.compile(r"sitemap-posts-post-\d+\.xml$")
@@ -237,18 +180,26 @@ def find_homedubu_reference(house_name: str, index: list[dict]) -> dict | None:
     return best
 
 
-def find_all_references(house_name: str, homedubu_index: list[dict]) -> list[dict]:
-    """두 사이트에서 찾은 참고 자료를 합쳐서 반환한다 (있는 것만, 순서: mhb-blog -> homedubu)."""
+def find_all_references(
+    house_name: str,
+    homedubu_index: list[dict],
+    mhb_reference: dict | None = None,
+) -> list[dict]:
+    """두 사이트에서 찾은 참고 자료를 합쳐서 반환한다 (있는 것만, 순서: mhb-blog -> homedubu).
+
+    mhb_reference: claude_advisor.find_mhb_blog_reference()가 미리 찾아온 결과를
+    그대로 받는다. mhb-blog.com은 우리 서버 IP를 막아서(403) 이 파일에서 직접
+    검색할 수 없기 때문 - main.py가 호출 순서를 책임진다.
+    """
     print(f"[reference_finder] --- 참고자료 검색 시작: house_name={house_name!r} ---")
     refs = []
 
-    mhb = search_mhb_blog(house_name)
-    if mhb:
-        refs.append(mhb)
+    if mhb_reference:
+        refs.append(mhb_reference)
 
     homedubu = find_homedubu_reference(house_name, homedubu_index)
     if homedubu:
         refs.append(homedubu)
 
-    print(f"[reference_finder] --- 결과: mhb={'있음' if mhb else '없음'}, homedubu={'있음' if homedubu else '없음'} ---")
+    print(f"[reference_finder] --- 결과: mhb={'있음' if mhb_reference else '없음'}, homedubu={'있음' if homedubu else '없음'} ---")
     return refs

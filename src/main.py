@@ -267,7 +267,13 @@ def main() -> None:
 
         house_name = type_variants[0].get("house_name")
         try:
-            references = reference_finder.find_all_references(house_name, homedubu_index)
+            mhb_reference = claude_advisor.find_mhb_blog_reference(house_name)
+        except Exception as e:  # noqa: BLE001
+            print(f"[main] mhb-blog 참고 자료 검색 실패({house_name}): {e}")
+            mhb_reference = None
+
+        try:
+            references = reference_finder.find_all_references(house_name, homedubu_index, mhb_reference)
         except Exception as e:  # noqa: BLE001
             print(f"[main] 참고 자료 검색 실패({house_name}): {e}")
             references = []
