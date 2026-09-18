@@ -99,6 +99,16 @@ def fetch_notices(endpoint_key: str, page: int = 1, per_page: int = 100) -> list
     data = resp.json()
 
     # odcloud 표준 응답은 보통 {"data": [...], "currentCount": N, "matchCount": N, "page": N, ...}
+    match_count = data.get("matchCount")
+    current_count = data.get("currentCount")
+    if match_count is not None and match_count > per_page:
+        # matchCount(전체 건수)가 한 페이지 분량(per_page)보다 많다는 건 - 우리가
+        # page=1만 호출하는 지금 구조로는 뒷페이지 데이터를 놓치고 있다는 뜻.
+        print(
+            f"[cheongyak_api] {endpoint_key}: 전체 {match_count}건 중 이번 페이지 "
+            f"{current_count}건만 받아옴 (page={page}, perPage={per_page}) - 뒷페이지 존재"
+        )
+
     return data.get("data", [])
 
 

@@ -90,6 +90,8 @@ def collect_candidate_notices(prefer_regions: list[str] | None = None) -> list[d
     candidates: list[dict] = []
     today = today_kst()
     expired_count = 0
+    out_of_region_count = 0
+    raw_total = 0
 
     for endpoint_key in ("apt_remainder", "arbitrary_supply"):
         try:
@@ -98,18 +100,24 @@ def collect_candidate_notices(prefer_regions: list[str] | None = None) -> list[d
             print(f"[main] {endpoint_key} 조회 실패, 건너뜀: {e}")
             continue
 
+        raw_total += len(raw_list)
+        print(f"[main] {endpoint_key} 원본 {len(raw_list)}건 수신")
+
         for raw in raw_list:
             notice = cheongyak_api.parse_notice(raw)
             notice["_endpoint_key"] = endpoint_key  # 주택형 상세 조회 시 어느 Mdl 엔드포인트를 쓸지 기억
             if not cheongyak_api.is_target_region(notice.get("address", ""), prefer_regions):
+                out_of_region_count += 1
                 continue
             if not is_reception_open(notice, today):
                 expired_count += 1
                 continue
             candidates.append(notice)
 
-    if expired_count:
-        print(f"[main] 접수 마감 지난 공고 {expired_count}건 제외")
+    print(
+        f"[main] 원본 총 {raw_total}건 -> 지역 필터 제외 {out_of_region_count}건, "
+        f"접수 마감 제외 {expired_count}건, 최종 후보 {len(candidates)}건"
+    )
 
     return candidates
 

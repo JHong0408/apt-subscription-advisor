@@ -102,6 +102,7 @@ def search_mhb_blog(house_name: str, per_page: int = 5) -> dict | None:
     """
     query = _search_query(house_name)
     if not query or len(query) < 2:
+        print(f"[reference_finder] mhb-blog: 검색어가 너무 짧아 스킵 (house_name={house_name!r})")
         return None
 
     try:
@@ -112,7 +113,8 @@ def search_mhb_blog(house_name: str, per_page: int = 5) -> dict | None:
         )
         resp.raise_for_status()
         posts = resp.json()
-    except (requests.RequestException, ValueError):
+    except (requests.RequestException, ValueError) as e:
+        print(f"[reference_finder] mhb-blog 검색 실패(query={query!r}): {e}")
         return None
 
     candidates = []
@@ -122,7 +124,13 @@ def search_mhb_blog(house_name: str, per_page: int = 5) -> dict | None:
         if url and title:
             candidates.append({"source": "mhb-blog.com", "title": title, "url": url})
 
-    return _pick_best(candidates, house_name) if candidates else None
+    if not candidates:
+        print(f"[reference_finder] mhb-blog: query={query!r} 검색 결과 0건 (데이터 자체가 없음)")
+        return None
+
+    best = _pick_best(candidates, house_name)
+    print(f"[reference_finder] mhb-blog: query={query!r} 검색 {len(candidates)}건 중 선택 -> {best['title']!r}")
+    return best
 
 
 _POST_SITEMAP_RE = re.compile(r"sitemap-posts-post-\d+\.xml$")
@@ -153,8 +161,11 @@ def build_homedubu_index(max_posts: int = 40) -> list[dict]:
     """
     try:
         sitemap_urls = _get_homedubu_post_sitemap_urls()
-    except (requests.RequestException, ET.ParseError):
+    except (requests.RequestException, ET.ParseError) as e:
+        print(f"[reference_finder] homedubu sitemap 인덱스 요청 실패: {e}")
         return []
+
+    print(f"[reference_finder] homedubu: 서브 sitemap {len(sitemap_urls)}개 발견")
 
     entries: list[tuple[str, str]] = []
     for sitemap_url in sitemap_urls:
@@ -162,7 +173,8 @@ def build_homedubu_index(max_posts: int = 40) -> list[dict]:
             resp = requests.get(sitemap_url, timeout=10)
             resp.raise_for_status()
             root = ET.fromstring(resp.content)
-        except (requests.RequestException, ET.ParseError):
+        except (requests.RequestException, ET.ParseError) as e:
+            print(f"[reference_finder] homedubu 서브 sitemap 실패({sitemap_url}): {e}")
             continue
         for url_el in root.findall(".//sm:url", _SITEMAP_NS):
             loc = url_el.find("sm:loc", _SITEMAP_NS)
@@ -171,18 +183,26 @@ def build_homedubu_index(max_posts: int = 40) -> list[dict]:
                 entries.append((lastmod.text if lastmod is not None else "", loc.text))
 
     entries.sort(reverse=True)  # lastmod 최신순
+    print(
+        f"[reference_finder] homedubu: sitemap에 URL 총 {len(entries)}개 - "
+        f"lastmod 최신 {min(max_posts, len(entries))}개만 <title> 조회 예정"
+    )
 
     index: list[dict] = []
+    fetch_fail = 0
     for _, url in entries[:max_posts]:
         try:
             resp = requests.get(url, timeout=10)
             resp.raise_for_status()
-        except requests.RequestException:
+        except requests.RequestException as e:
+            fetch_fail += 1
+            print(f"[reference_finder] homedubu 게시글 제목 조회 실패({url}): {e}")
             continue
         m = re.search(r"<title[^>]*>(.*?)</title>", resp.text, re.IGNORECASE | re.DOTALL)
         if m:
             index.append({"title": _strip_html(m.group(1)), "url": url})
 
+    print(f"[reference_finder] homedubu: 인덱스 {len(index)}건 구축 완료 (제목 조회 실패 {fetch_fail}건)")
     return index
 
 
@@ -194,6 +214,7 @@ def find_homedubu_reference(house_name: str, index: list[dict]) -> dict | None:
     """
     query = _normalize_name(house_name)
     if not query or len(query) < 2:
+        print(f"[reference_finder] homedubu: 검색어가 너무 짧아 스킵 (house_name={house_name!r})")
         return None
 
     candidates = [
@@ -202,11 +223,18 @@ def find_homedubu_reference(house_name: str, index: list[dict]) -> dict | None:
         if query in _normalize_name(entry["title"]) or _normalize_name(entry["title"]) in query
     ]
 
-    return _pick_best(candidates, house_name) if candidates else None
+    if not candidates:
+        print(f"[reference_finder] homedubu: 인덱스 {len(index)}건 중 query={query!r} 매칭 0건")
+        return None
+
+    best = _pick_best(candidates, house_name)
+    print(f"[reference_finder] homedubu: query={query!r} 매칭 {len(candidates)}건 중 선택 -> {best['title']!r}")
+    return best
 
 
 def find_all_references(house_name: str, homedubu_index: list[dict]) -> list[dict]:
     """두 사이트에서 찾은 참고 자료를 합쳐서 반환한다 (있는 것만, 순서: mhb-blog -> homedubu)."""
+    print(f"[reference_finder] --- 참고자료 검색 시작: house_name={house_name!r} ---")
     refs = []
 
     mhb = search_mhb_blog(house_name)
@@ -217,4 +245,5 @@ def find_all_references(house_name: str, homedubu_index: list[dict]) -> list[dic
     if homedubu:
         refs.append(homedubu)
 
+    print(f"[reference_finder] --- 결과: mhb={'있음' if mhb else '없음'}, homedubu={'있음' if homedubu else '없음'} ---")
     return refs
