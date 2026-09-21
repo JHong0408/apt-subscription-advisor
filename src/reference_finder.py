@@ -3,11 +3,14 @@ homedubu.com / mhb-blog.com 두 청약 분석 블로그에서, 알림 보내는 
 게시글이 있으면 찾아서 Slack 메시지의 "참고 자료" 링크로 붙이기 위한 모듈.
 
 - homedubu.com: robots.txt가 검색(`/?s=*`), REST API(`/wp-json/`),
-  카테고리 페이지네이션(`/*/page/*`)을 전부 막아놔서, robots.txt가 허용하는
-  sitemap(`wp-sitemap.xml`)으로 최근 게시글 URL 목록만 가져온 뒤, 그 게시글
-  페이지의 <title>만 개별로 읽어서 단지명이 들어있는지 대조한다. 매 공고마다
-  이 크롤링을 반복하면 비효율적이라, main.py에서 파이프라인 실행당 한 번만
-  인덱스를 만들어서 재사용한다.
+  카테고리 페이지네이션(`/*/page/*`)을 전부 막아놔서, robots.txt가 허용하는 두
+  경로를 같이 쓴다 - (1) 청약 카테고리 첫 페이지(`/category/subscription/`,
+  페이지네이션은 막혀서 첫 페이지만) - 전부 청약 관련 글이 보장됨, (2)
+  sitemap(`wp-sitemap.xml`)으로 사이트 전체 최신 글 URL을 가져온 뒤 각 게시글의
+  <title>을 개별로 읽음 - 카테고리 무관이라 관련 없는 글도 섞이지만 더 넓게
+  훑을 수 있음. build_homedubu_index()가 (1)을 우선하고 (2)로 보충한다. 매
+  공고마다 이 크롤링을 반복하면 비효율적이라, main.py에서 파이프라인 실행당
+  한 번만 인덱스를 만들어서 재사용한다.
 
 - mhb-blog.com: 원래는 여기도 워드프레스 REST API(`/wp-json/wp/v2/posts?search=`)로
   직접 검색했는데, GitHub Actions(Azure) IP를 WAF가 403으로 차단해서(실측 확인,
@@ -81,6 +84,39 @@ def _pick_best(candidates: list[dict], house_name: str) -> dict:
     return candidates[0]
 
 
+HOMEDUBU_CATEGORY_URL = "https://homedubu.com/category/subscription/"
+
+# 검색 결과 페이지와 카테고리 아카이브 페이지가 같은 테마 마크업을 쓴다(실측 확인)
+_ENTRY_TITLE_RE = re.compile(
+    r'<h3 class="entry-title td-module-title"><a href="([^"]+)"[^>]*title="([^"]+)"'
+)
+
+
+def _fetch_homedubu_category_posts() -> list[dict]:
+    """청약 카테고리(robots.txt가 허용하는 첫 페이지)에서 글 목록을 가져온다.
+
+    페이지네이션(`/category/subscription/page/2/` 등)은 robots.txt(`/*/page/*`)가
+    막아서 첫 페이지(보통 9~10개)까지만 가져올 수 있다. 대신 여기 나오는 글은
+    전부 "청약" 카테고리 글이라는 게 보장되므로, sitemap 기반 인덱스(사이트 전체
+    글 중 최신 40개, 카테고리 무관이라 뉴스/임대/꿀팁 글이 섞여 들어감)보다
+    관련도가 높다. build_homedubu_index()가 이 결과를 앞쪽에 두고 sitemap
+    결과로 보충한다.
+    """
+    try:
+        resp = requests.get(HOMEDUBU_CATEGORY_URL, timeout=10)
+        resp.raise_for_status()
+    except requests.RequestException as e:
+        print(f"[reference_finder] homedubu 청약 카테고리 페이지 요청 실패: {e}")
+        return []
+
+    posts = [
+        {"title": html.unescape(title), "url": url}
+        for url, title in _ENTRY_TITLE_RE.findall(resp.text)
+    ]
+    print(f"[reference_finder] homedubu: 청약 카테고리 첫 페이지에서 {len(posts)}건 발견")
+    return posts
+
+
 _POST_SITEMAP_RE = re.compile(r"sitemap-posts-post-\d+\.xml$")
 
 
@@ -102,16 +138,23 @@ def _get_homedubu_post_sitemap_urls() -> list[str]:
 
 
 def build_homedubu_index(max_posts: int = 40) -> list[dict]:
-    """최근 게시글 max_posts개의 {title, url}을 모아온다.
+    """청약 카테고리 첫 페이지 + 최근 게시글 max_posts개(sitemap 기반)를 합쳐 인덱스를 만든다.
+
+    카테고리 글(항상 청약 관련)을 먼저 넣고, sitemap 기반 결과(사이트 전체 최신순,
+    카테고리 무관)를 URL 중복 제거 후 뒤에 보충한다 - find_homedubu_reference()의
+    _pick_best()가 회차 매칭 후보가 없을 때 첫 번째 후보를 쓰므로, 카테고리 글이
+    앞에 있으면 더 관련도 높은 결과가 우선된다.
 
     파이프라인 실행당 딱 한 번만 호출하도록(main.py) 설계됨 - 공고마다 매번
     다시 크롤링하면 요청 수가 너무 많아진다.
     """
+    category_posts = _fetch_homedubu_category_posts()
+
     try:
         sitemap_urls = _get_homedubu_post_sitemap_urls()
     except (requests.RequestException, ET.ParseError) as e:
         print(f"[reference_finder] homedubu sitemap 인덱스 요청 실패: {e}")
-        return []
+        return category_posts
 
     print(f"[reference_finder] homedubu: 서브 sitemap {len(sitemap_urls)}개 발견")
 
@@ -150,8 +193,15 @@ def build_homedubu_index(max_posts: int = 40) -> list[dict]:
         if m:
             index.append({"title": _strip_html(m.group(1)), "url": url})
 
-    print(f"[reference_finder] homedubu: 인덱스 {len(index)}건 구축 완료 (제목 조회 실패 {fetch_fail}건)")
-    return index
+    print(f"[reference_finder] homedubu: sitemap 인덱스 {len(index)}건 구축 완료 (제목 조회 실패 {fetch_fail}건)")
+
+    seen_urls = {p["url"] for p in category_posts}
+    combined = category_posts + [p for p in index if p["url"] not in seen_urls]
+    print(
+        f"[reference_finder] homedubu: 최종 인덱스 {len(combined)}건 "
+        f"(카테고리 {len(category_posts)}건 + sitemap 보충 {len(combined) - len(category_posts)}건)"
+    )
+    return combined
 
 
 def find_homedubu_reference(house_name: str, index: list[dict]) -> dict | None:
