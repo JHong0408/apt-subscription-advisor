@@ -242,6 +242,11 @@ def main() -> None:
         print("[main] 신규 공고 없음, 종료")
         return
 
+    try:
+        notifier.get_or_create_daily_channel(total_count=len(new_by_notice))
+    except Exception as e:  # noqa: BLE001
+        print(f"[main] Slack 채널 헤더 생성 실패: {e}")
+
     log_lines = []
     for notice_id, type_variants in new_by_notice.items():
         # 공고 하나 안의 타입들을 각각 분석(면적/분양가별로 실거래가 비교가 다르므로)한 뒤,

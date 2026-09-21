@@ -136,12 +136,16 @@ def _save_channel_state(state: dict) -> None:
     CHANNEL_STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2))
 
 
-def get_or_create_daily_channel() -> str:
+def get_or_create_daily_channel(total_count: int | None = None) -> str:
     """오늘(KST) 날짜의 채널 ID를 가져오거나, 없으면 새로 만든다.
 
     daily_channel.json에 {"date": "...", "channel_id": "..."}로 저장해두기 때문에,
     같은 날 여러 번(하루 여러 공고, 또는 파이프라인 재실행) 호출해도 채널이
     중복 생성되지 않고 같은 채널에 계속 쌓인다. 날짜가 바뀌면 새 채널을 만든다.
+
+    total_count: 오늘 보낼 신규 공고(타입 아니라 아파트/공고 단위) 총 건수.
+    채널을 새로 만드는(=오늘 첫 호출인) 시점에만 헤더 메시지에 반영된다 -
+    main.py가 전체 개수를 이미 알고 있는 시점에 한 번 명시적으로 호출해서 넘긴다.
     """
     today_str = _today_kst_str()
     state = _load_channel_state()
@@ -152,7 +156,11 @@ def get_or_create_daily_channel() -> str:
     channel_name = f"apt-{today_str}"
     channel_id = _create_channel(channel_name)
     _invite_user(channel_id)
-    _post(channel_id, f"📋 *{today_str} 청약 알림*")
+
+    header = f"📋 *{today_str} 청약 알림*"
+    if total_count is not None:
+        header += f" — 신규 공고 {total_count}건"
+    _post(channel_id, header)
 
     _save_channel_state({"date": today_str, "channel_id": channel_id})
     return channel_id
