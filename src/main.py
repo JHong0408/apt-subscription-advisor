@@ -242,15 +242,6 @@ def main() -> None:
         print("[main] 신규 공고 없음, 종료")
         return
 
-    # homedubu.com 참고 자료 검색은 실행당 1번만 인덱스를 만들어서 재사용한다
-    # (공고마다 다시 크롤링하면 요청 수가 너무 많아짐 - reference_finder.py 참고).
-    # 실패해도(사이트 접속 불가 등) 빈 리스트로 조용히 넘어가고 알림 자체는 계속 나간다.
-    try:
-        homedubu_index = reference_finder.build_homedubu_index()
-    except Exception as e:  # noqa: BLE001
-        print(f"[main] homedubu.com 참고 자료 인덱스 생성 실패: {e}")
-        homedubu_index = []
-
     log_lines = []
     for notice_id, type_variants in new_by_notice.items():
         # 공고 하나 안의 타입들을 각각 분석(면적/분양가별로 실거래가 비교가 다르므로)한 뒤,
@@ -273,10 +264,12 @@ def main() -> None:
             mhb_reference = None
 
         try:
-            references = reference_finder.find_all_references(house_name, homedubu_index, mhb_reference)
+            homedubu_reference = claude_advisor.find_homedubu_reference(house_name)
         except Exception as e:  # noqa: BLE001
-            print(f"[main] 참고 자료 검색 실패({house_name}): {e}")
-            references = []
+            print(f"[main] homedubu 참고 자료 검색 실패({house_name}): {e}")
+            homedubu_reference = None
+
+        references = reference_finder.find_all_references(mhb_reference, homedubu_reference)
 
         message = notifier.format_notice_report_multi(analyzed_types, recommendation, references)
         notifier.send_slack_message(message)
