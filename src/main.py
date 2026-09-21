@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -217,6 +218,32 @@ def _to_int(value) -> int | None:
     return int(cleaned) if cleaned.isdigit() else None
 
 
+def fetch_blog_references(house_name: str) -> tuple[dict | None, dict | None]:
+    """mhb-blog/homedubu 참고자료를 동시에 검색해서 (mhb_reference, homedubu_reference)로 반환.
+
+    둘 다 Claude API에 웹검색 포함 요청을 보내는데(최악의 경우 각각 최대 55초),
+    순차로 하면 공고 하나당 최대 110초까지 걸려서 job 타임아웃 위험이 커진다.
+    서로 완전히 독립적인 조회라 동시에 실행해서 대기 시간을 절반(최대 55초)으로 줄인다.
+    """
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        mhb_future = executor.submit(claude_advisor.find_mhb_blog_reference, house_name)
+        homedubu_future = executor.submit(claude_advisor.find_homedubu_reference, house_name)
+
+        try:
+            mhb_reference = mhb_future.result()
+        except Exception as e:  # noqa: BLE001
+            print(f"[main] mhb-blog 참고 자료 검색 실패({house_name}): {e}")
+            mhb_reference = None
+
+        try:
+            homedubu_reference = homedubu_future.result()
+        except Exception as e:  # noqa: BLE001
+            print(f"[main] homedubu 참고 자료 검색 실패({house_name}): {e}")
+            homedubu_reference = None
+
+    return mhb_reference, homedubu_reference
+
+
 def main() -> None:
     profile = load_profile()
     seen_ids = load_seen_ids()
@@ -262,17 +289,7 @@ def main() -> None:
             recommendation = f"(AI 추천 생성 실패: {e})"
 
         house_name = type_variants[0].get("house_name")
-        try:
-            mhb_reference = claude_advisor.find_mhb_blog_reference(house_name)
-        except Exception as e:  # noqa: BLE001
-            print(f"[main] mhb-blog 참고 자료 검색 실패({house_name}): {e}")
-            mhb_reference = None
-
-        try:
-            homedubu_reference = claude_advisor.find_homedubu_reference(house_name)
-        except Exception as e:  # noqa: BLE001
-            print(f"[main] homedubu 참고 자료 검색 실패({house_name}): {e}")
-            homedubu_reference = None
+        mhb_reference, homedubu_reference = fetch_blog_references(house_name)
 
         references = reference_finder.find_all_references(mhb_reference, homedubu_reference)
 

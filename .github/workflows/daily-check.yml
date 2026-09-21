@@ -16,7 +16,9 @@ permissions:
 jobs:
   check-and-notify:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # 공고 하나당 Claude 호출 3번(추천 1 + mhb-blog/homedubu 웹검색 2, 병렬 실행)에
+    # RTMS 실거래가 조회 지연까지 겹치면 10분으로는 부족한 날이 있어서 20분으로 상향.
+    timeout-minutes: 20
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
