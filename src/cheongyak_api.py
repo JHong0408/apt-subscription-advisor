@@ -236,7 +236,10 @@ def parse_notice(raw: dict) -> dict:
         "supply_type": raw.get("HOUSE_SECD_NM"),
         "recruit_date": raw.get("RCRIT_PBLANC_DE"),
         "notice_url": raw.get("PBLANC_URL"),
-        # 신청 접수 종료일(YYYY-MM-DD) - main.py에서 이미 마감된 공고를 걸러낼 때 씀
+        # 신청 접수 시작/종료일. 날짜 형식이 엔드포인트마다 다름(apt_remainder는
+        # "YYYY-MM-DD", arbitrary_supply는 "YYYYMMDD") - 화면 표시는 notifier.py에서
+        # 통일해서 처리한다. 종료일은 main.py에서 이미 마감된 공고를 걸러낼 때도 씀.
+        "reception_start_date": raw.get("SUBSCRPT_RCEPT_BGNDE"),
         "reception_end_date": raw.get("SUBSCRPT_RCEPT_ENDDE"),
         # 아래 둘은 이 엔드포인트에 없음 - fetch_models()로 채워지기 전까지는 None
         "area_sqm": None,

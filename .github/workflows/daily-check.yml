@@ -35,7 +35,7 @@ jobs:
           RTMS_SERVICE_KEY: ${{ secrets.RTMS_SERVICE_KEY }}
           CLAUDE_API_KEY: ${{ secrets.CLAUDE_API_KEY }}
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-          SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+          SLACK_USER_ID: ${{ secrets.SLACK_USER_ID }}
           MY_PROFILE_JSON: ${{ secrets.MY_PROFILE_JSON }}
         run: python src/main.py
 

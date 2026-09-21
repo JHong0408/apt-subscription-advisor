@@ -1,36 +1,38 @@
 """Slack Bot Token(Web API)으로 결과 전송.
 
-기존에는 Incoming Webhook(SLACK_WEBHOOK_URL)으로 채널에 그냥 계속 쌓기만 했는데,
-그러면 채널이 무한정 길어져서 오늘 알림을 찾기 힘들어진다.
+이전엔 고정 채널 안에 "오늘 날짜" 헤더 메시지 1개 + 그날 공고들을 스레드 답글로
+쌓는 방식이었는데, 가시성이 안 좋아서(스레드를 펼쳐봐야 내용이 보임) 매일 날짜별로
+새 "채널"을 만들고 그 안에 일반 메시지로 쭉 쌓는 방식으로 바꿨다.
 
-그래서 "오늘 날짜" 단위로 헤더 메시지 1개를 올리고, 그날 발견된 공고들은
-전부 그 헤더의 스레드 답글로 붙이는 방식으로 바꿨다. 채널 개수를 늘리지 않고도
-(워크스페이스에 채널이 계속 새로 생기지 않음) 날짜별로 시각적으로 묶여서 보인다.
-
-이 방식은 Incoming Webhook으로는 안 되고(스레드에 답글을 달려면 이전 메시지의
-ts가 필요한데 Webhook 응답에는 그게 없음) Slack Web API(chat.postMessage)를
-Bot Token으로 호출해야 한다. 필요한 설정:
+필요한 설정:
 
 1. https://api.slack.com/apps 에서 기존 Slack App(예: apt-advisor) 선택
-2. "OAuth & Permissions" -> Bot Token Scopes에 `chat:write` 추가
-   (초대 없이 공개 채널에 바로 쓰고 싶으면 `chat:write.public`도 추가)
-3. 앱을 워크스페이스에 재설치(reinstall) -> "Bot User OAuth Token"(xoxb-...) 발급
-4. 비공개 채널이면 그 채널에 앱을 초대(`/invite @앱이름`)
-5. 채널 ID 확인: 채널 이름 클릭 -> 채널 세부 정보 맨 아래 (C로 시작하는 값)
-6. 서버 환경변수에 SLACK_BOT_TOKEN(xoxb-...), SLACK_CHANNEL_ID(C...) 설정
-   (기존 SLACK_WEBHOOK_URL은 더 이상 쓰지 않음)
+2. "OAuth & Permissions" -> Bot Token Scopes에 추가:
+   - `chat:write` (메시지 전송, 이미 있었으면 그대로)
+   - `channels:manage` (매일 새 공개 채널 생성)
+   - `channels:read` (conversations.list - 채널 생성이 name_taken으로 실패했을 때
+     기존 채널을 찾기 위한 복구용)
+3. 앱을 워크스페이스에 재설치(reinstall) -> "Bot User OAuth Token"(xoxb-...) 재발급
+   (스코프 추가 후에는 반드시 재설치해야 토큰에 새 권한이 반영됨)
+4. 서버 환경변수에 SLACK_BOT_TOKEN(xoxb-...) 설정
+   (SLACK_CHANNEL_ID는 더 이상 안 씀 - 채널을 매일 새로 만들기 때문)
+5. (선택, 자동 초대용) 봇이 만든 새 채널에 자동으로 초대받고 싶으면
+   SLACK_USER_ID(사용자 프로필의 "회원 ID", U로 시작)를 환경변수로 추가 설정.
+   없으면 초대를 건너뛰고, 공개 채널이니 사이드바에서 직접 찾아 들어가면 됨.
 """
 from __future__ import annotations
 
 import json
 import os
-from datetime import date
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
 
-SLACK_API_URL = "https://slack.com/api/chat.postMessage"
-THREAD_STATE_FILE = Path("daily_thread.json")
+SLACK_API_BASE = "https://slack.com/api"
+CHANNEL_STATE_FILE = Path("daily_channel.json")
+
+KST = timezone(timedelta(hours=9))
 
 
 class SlackNotifierError(RuntimeError):
@@ -44,21 +46,14 @@ def _get_bot_token() -> str:
     return token
 
 
-def _get_channel_id() -> str:
-    channel = os.environ.get("SLACK_CHANNEL_ID")
-    if not channel:
-        raise SlackNotifierError("환경변수 SLACK_CHANNEL_ID가 설정되지 않았습니다.")
-    return channel
+def _today_kst_str() -> str:
+    """GitHub Actions 러너는 UTC로 도니까, 채널 날짜는 반드시 KST 기준으로 계산한다."""
+    return datetime.now(KST).date().isoformat()
 
 
-def _post(text: str, thread_ts: str | None = None) -> str:
-    """chat.postMessage 호출. 성공하면 이 메시지의 ts(스레드 루트로 쓸 수 있는 값)를 반환."""
-    payload = {"channel": _get_channel_id(), "text": text}
-    if thread_ts:
-        payload["thread_ts"] = thread_ts
-
+def _slack_post(method: str, payload: dict) -> dict:
     resp = requests.post(
-        SLACK_API_URL,
+        f"{SLACK_API_BASE}/{method}",
         headers={
             "Authorization": f"Bearer {_get_bot_token()}",
             "Content-Type": "application/json; charset=utf-8",
@@ -67,54 +62,117 @@ def _post(text: str, thread_ts: str | None = None) -> str:
         timeout=10,
     )
     resp.raise_for_status()
-    data = resp.json()
-    if not data.get("ok"):
-        raise SlackNotifierError(f"Slack API 오류: {data.get('error')}")
-    return data["ts"]
+    return resp.json()
 
 
-def _load_thread_state() -> dict:
-    if not THREAD_STATE_FILE.exists():
+def _find_channel_id_by_name(name: str) -> str | None:
+    """conversations.list를 순회하며 이름이 정확히 일치하는 공개 채널의 ID를 찾는다.
+
+    conversations.create가 name_taken으로 실패했을 때(예: 이전 실행이 채널은
+    만들어놓고 도중에 죽어서 daily_channel.json 저장을 못한 경우) 복구용으로 쓴다.
+    """
+    cursor = None
+    while True:
+        params = {"types": "public_channel", "limit": 200}
+        if cursor:
+            params["cursor"] = cursor
+        resp = requests.get(
+            f"{SLACK_API_BASE}/conversations.list",
+            headers={"Authorization": f"Bearer {_get_bot_token()}"},
+            params=params,
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if not data.get("ok"):
+            raise SlackNotifierError(f"Slack API 오류(conversations.list): {data.get('error')}")
+        for ch in data.get("channels", []):
+            if ch.get("name") == name:
+                return ch["id"]
+        cursor = data.get("response_metadata", {}).get("next_cursor")
+        if not cursor:
+            return None
+
+
+def _create_channel(name: str) -> str:
+    """공개 채널을 새로 만들고 채널 ID를 반환한다. 이미 있으면(name_taken) 찾아서 재사용."""
+    data = _slack_post("conversations.create", {"name": name, "is_private": False})
+    if data.get("ok"):
+        return data["channel"]["id"]
+
+    if data.get("error") == "name_taken":
+        existing = _find_channel_id_by_name(name)
+        if existing:
+            return existing
+
+    raise SlackNotifierError(f"Slack API 오류(conversations.create): {data.get('error')}")
+
+
+def _invite_user(channel_id: str) -> None:
+    """SLACK_USER_ID가 설정돼 있으면 새 채널에 그 사용자를 자동 초대한다.
+
+    설정 안 돼 있거나 실패해도(이미 참여 중 등) 조용히 넘어간다 - 초대는
+    편의 기능일 뿐이라 실패해도 알림 자체는 계속 나가야 한다.
+    """
+    user_id = os.environ.get("SLACK_USER_ID")
+    if not user_id:
+        return
+
+    data = _slack_post("conversations.invite", {"channel": channel_id, "users": user_id})
+    if not data.get("ok") and data.get("error") != "already_in_channel":
+        print(f"[notifier] 채널 자동 초대 실패({data.get('error')}) - 무시하고 계속 진행")
+
+
+def _load_channel_state() -> dict:
+    if not CHANNEL_STATE_FILE.exists():
         return {}
     try:
-        return json.loads(THREAD_STATE_FILE.read_text())
+        return json.loads(CHANNEL_STATE_FILE.read_text())
     except json.JSONDecodeError:
         return {}
 
 
-def _save_thread_state(state: dict) -> None:
-    THREAD_STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2))
+def _save_channel_state(state: dict) -> None:
+    CHANNEL_STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2))
 
 
-def get_or_create_daily_thread() -> str:
-    """오늘 날짜의 스레드 루트 ts를 가져오거나, 없으면 헤더 메시지를 새로 올려서 만든다.
+def get_or_create_daily_channel() -> str:
+    """오늘(KST) 날짜의 채널 ID를 가져오거나, 없으면 새로 만든다.
 
-    daily_thread.json에 {"date": "...", "thread_ts": "..."}로 저장해두기 때문에,
-    같은 날 여러 번(하루 여러 공고, 또는 파이프라인 재실행) 호출해도 헤더가
-    중복으로 생기지 않고 같은 스레드에 계속 붙는다. 날짜가 바뀌면 새 헤더를 만든다.
+    daily_channel.json에 {"date": "...", "channel_id": "..."}로 저장해두기 때문에,
+    같은 날 여러 번(하루 여러 공고, 또는 파이프라인 재실행) 호출해도 채널이
+    중복 생성되지 않고 같은 채널에 계속 쌓인다. 날짜가 바뀌면 새 채널을 만든다.
     """
-    today_str = date.today().isoformat()
-    state = _load_thread_state()
+    today_str = _today_kst_str()
+    state = _load_channel_state()
 
-    if state.get("date") == today_str and state.get("thread_ts"):
-        return state["thread_ts"]
+    if state.get("date") == today_str and state.get("channel_id"):
+        return state["channel_id"]
 
-    header_text = f"📋 *{today_str} 청약 알림*"
-    thread_ts = _post(header_text)
+    channel_name = f"apt-{today_str}"
+    channel_id = _create_channel(channel_name)
+    _invite_user(channel_id)
+    _post(channel_id, f"📋 *{today_str} 청약 알림*")
 
-    _save_thread_state({"date": today_str, "thread_ts": thread_ts})
-    return thread_ts
+    _save_channel_state({"date": today_str, "channel_id": channel_id})
+    return channel_id
+
+
+def _post(channel_id: str, text: str) -> None:
+    data = _slack_post("chat.postMessage", {"channel": channel_id, "text": text})
+    if not data.get("ok"):
+        raise SlackNotifierError(f"Slack API 오류(chat.postMessage): {data.get('error')}")
 
 
 def send_slack_message(text: str) -> None:
-    """공고 하나에 대한 메시지를 오늘 날짜 스레드의 답글로 전송한다.
+    """공고 하나에 대한 메시지를 오늘(KST) 날짜 채널에 일반 메시지로 전송한다.
 
-    SLACK_BOT_TOKEN/SLACK_CHANNEL_ID가 설정되지 않았거나 호출이 실패하면
-    콘솔에만 출력하고 넘어간다 (개인용 배치라 여기서 예외로 죽이지 않음).
+    SLACK_BOT_TOKEN이 없거나 호출이 실패하면 콘솔에만 출력하고 넘어간다
+    (개인용 배치라 여기서 예외로 죽이지 않음).
     """
     try:
-        thread_ts = get_or_create_daily_thread()
-        _post(text, thread_ts=thread_ts)
+        channel_id = get_or_create_daily_channel()
+        _post(channel_id, text)
         return
     except SlackNotifierError as e:
         print(f"[notifier] {e} - 콘솔에만 출력합니다.")
@@ -122,6 +180,27 @@ def send_slack_message(text: str) -> None:
         print(f"[notifier] Slack 요청 실패: {e} - 콘솔에만 출력합니다.")
 
     print(text)
+
+
+def _format_date(date_str: str | None) -> str | None:
+    """'20260918'과 '2026-09-18'를 둘 다 'YYYY-MM-DD'로 통일한다.
+
+    cheongyak_api.parse_notice()의 주석대로, apt_remainder와 arbitrary_supply가
+    접수일 형식을 다르게 준다(대시 있음/없음) - 화면에는 항상 같은 형식으로 보여준다.
+    """
+    if not date_str:
+        return None
+    digits = date_str.replace("-", "")
+    if len(digits) == 8 and digits.isdigit():
+        return f"{digits[:4]}-{digits[4:6]}-{digits[6:]}"
+    return date_str
+
+
+def _format_reception_period(start: str | None, end: str | None) -> str | None:
+    start_fmt, end_fmt = _format_date(start), _format_date(end)
+    if not start_fmt and not end_fmt:
+        return None
+    return f"{start_fmt or '?'} ~ {end_fmt or '?'}"
 
 
 def format_notice_report_multi(
@@ -139,10 +218,14 @@ def format_notice_report_multi(
     """
     base = analyzed_types[0]["variant"]
     notice_url = base.get("notice_url")
+    period = _format_reception_period(
+        base.get("reception_start_date"), base.get("reception_end_date")
+    )
 
     lines = [
         f"*{base.get('house_name')}* ({base.get('address')})",
-        f"> 공급구분: {base.get('supply_type') or '확인필요'}",
+        f"> 공급구분: {base.get('supply_type') or '확인필요'}"
+        + (f" · 청약 신청기간: {period}" if period else ""),
     ]
 
     for a in analyzed_types:
