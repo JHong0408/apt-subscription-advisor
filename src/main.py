@@ -10,8 +10,9 @@
 6. 타입별 대략적 DSR/LTV로 필요 현금 계산
 7. homedubu.com / mhb-blog.com 두 청약 분석 블로그에 관련 게시글이 있으면
    "참고 자료" 링크로 같이 붙임 (reference_finder.py, 없어도 그냥 생략)
-8. 공고 하나당(타입이 몇 개든) Claude 호출 1번 + Slack 메시지 1개로 묶어서 전송
-   (타입별로 따로 보내면 공고당 메시지가 여러 개로 쪼개져서 스팸처럼 되는 걸 방지)
+8. 공고 하나당(타입이 몇 개든) Claude 호출 1번으로 추천 문구를 만들고, apt-advisor
+   사이트(Cloudflare Worker + D1)로 결과를 전송 (site_sync.py). 알림 채널은 Slack이
+   아니라 이 사이트 하나뿐이고, 로그인해서 전체 공고 검색 + 신규 공고 배지를 확인한다.
 """
 from __future__ import annotations
 
@@ -28,7 +29,7 @@ import cheongyak_api
 import rtms_api
 import analyzer
 import claude_advisor
-import notifier
+import site_sync
 import reference_finder
 
 SEEN_FILE = Path("seen_notices.json")
@@ -269,15 +270,11 @@ def main() -> None:
         print("[main] 신규 공고 없음, 종료")
         return
 
-    try:
-        notifier.get_or_create_daily_channel(total_count=len(new_by_notice))
-    except Exception as e:  # noqa: BLE001
-        print(f"[main] Slack 채널 헤더 생성 실패: {e}")
-
     log_lines = []
+    synced_count = 0
     for notice_id, type_variants in new_by_notice.items():
         # 공고 하나 안의 타입들을 각각 분석(면적/분양가별로 실거래가 비교가 다르므로)한 뒤,
-        # Claude 호출과 Slack 메시지는 공고당 1번으로 묶는다.
+        # Claude 호출과 사이트 동기화는 공고당 1번으로 묶는다.
         analyzed_types = []
         for v in type_variants:
             margin, loan = analyze_notice(v, profile)
@@ -293,8 +290,11 @@ def main() -> None:
 
         references = reference_finder.find_all_references(mhb_reference, homedubu_reference)
 
-        message = notifier.format_notice_report_multi(analyzed_types, recommendation, references)
-        notifier.send_slack_message(message)
+        # 동기화가 실패해도(사이트 다운 등) 아래에서 seen_ids에는 그대로 추가한다 - 원래
+        # Slack 전송도 실패 시 콘솔 출력만 하고 넘어갔던 것과 같은 원칙: 일시적 전송 실패로
+        # 같은 공고를 매일 재시도하며 스팸처럼 반복 알리지 않는다.
+        if site_sync.sync_notice(notice_id, analyzed_types, recommendation, references):
+            synced_count += 1
 
         for v in type_variants:
             seen_ids.add(v["variant_id"])
@@ -314,7 +314,7 @@ def main() -> None:
 
     save_seen_ids(seen_ids)
     RUN_LOG_FILE.write_text("\n".join(log_lines), encoding="utf-8")
-    print(f"[main] {len(new_by_notice)}건 알림 전송 완료 (타입 {total_new_types}개 포함)")
+    print(f"[main] {len(new_by_notice)}건 분석 완료 (타입 {total_new_types}개 포함), 사이트 동기화 {synced_count}건")
 
 
 if __name__ == "__main__":

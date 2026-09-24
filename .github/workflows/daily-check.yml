@@ -4,9 +4,9 @@ on:
   schedule:
     # 매일 한국시간(KST, UTC+9) 오전 10시 = UTC 당일 01:00
     # (오전 8시에서 늦춘 이유: 청약 공고가 9시 이후에 올라오는 경우가 있어서.
-    #  부수 효과로 UTC 날짜와 KST 날짜가 같은 달력일이 되어, notifier.py의
-    #  date.today()가 KST 기준 "오늘"과 어긋나지 않게 됨 - 예전 08:00 KST 스케줄은
-    #  UTC로는 전날 23:00이라 date.today()가 하루 전 날짜를 반환했었음)
+    #  부수 효과로 UTC 날짜와 KST 날짜가 같은 달력일이 되어, main.py의 today_kst()가
+    #  KST 기준 "오늘"과 어긋나지 않게 됨 - 예전 08:00 KST 스케줄은 UTC로는 전날 23:00이라
+    #  date.today()가 하루 전 날짜를 반환했었음)
     - cron: '0 1 * * *'
   workflow_dispatch: {}  # 필요할 때 수동으로도 실행 가능 (Actions 탭에서 Run workflow)
 
@@ -36,8 +36,8 @@ jobs:
           CHEONGYAK_SERVICE_KEY: ${{ secrets.CHEONGYAK_SERVICE_KEY }}
           RTMS_SERVICE_KEY: ${{ secrets.RTMS_SERVICE_KEY }}
           CLAUDE_API_KEY: ${{ secrets.CLAUDE_API_KEY }}
-          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-          SLACK_USER_ID: ${{ secrets.SLACK_USER_ID }}
+          SITE_URL: ${{ secrets.SITE_URL }}
+          SITE_SYNC_TOKEN: ${{ secrets.SITE_SYNC_TOKEN }}
           MY_PROFILE_JSON: ${{ secrets.MY_PROFILE_JSON }}
         run: python src/main.py
 

@@ -4,6 +4,10 @@
 내 예산/청약자격/회사위치를 반영해 Claude가 "신청할 만한지"까지 판단해주는
 개인용 GitHub Actions 파이프라인입니다.
 
+알림은 Slack이 아니라 [apt-advisor](https://github.com/JHong0408/apt-advisor)
+(Cloudflare Worker + D1 사이트)로 전송됩니다. 로그인해서 전체 공고를 검색하고,
+신규 공고는 배지로 확인합니다.
+
 ## 전체 흐름
 
 ```
@@ -11,8 +15,9 @@
   1. 청약홈 API → 신규 무순위/임의공급 공고 수집 (서울+경기, 전용 46㎡ 이상)
   2. 국토부 실거래가 API → 공고 지역 최근 실거래가 조회
   3. analyzer.py → 분양가 vs 실거래가 격차("안전마진") 계산, DSR 대략치 계산
-  4. claude_advisor.py → 위 데이터 + 내 프로필을 Claude에 넘겨 개인화 추천 생성
-  5. notifier.py → Slack(또는 텔레그램)으로 결과 전송
+  4. claude_advisor.py → 위 데이터 + 내 프로필을 Claude에 넘겨 개인화 추천 생성 +
+     mhb-blog.com/homedubu.com 참고자료 웹검색
+  5. site_sync.py → apt-advisor 사이트(Cloudflare Worker)의 POST /api/sync로 결과 전송
 ```
 
 ## 처음 설정하는 법
@@ -24,7 +29,7 @@
 3. **"국토교통부_아파트 매매 실거래가 상세 자료"** 활용신청 → 서비스키 발급
    (참고: 데이터포털은 계정당 서비스키가 보통 공용이라, 위 두 개가 같은 키일 수도 있어요)
 4. [Anthropic Console](https://console.anthropic.com)에서 Claude API 키 발급
-5. Slack에서 [Incoming Webhook](https://api.slack.com/messaging/webhooks) URL 발급 (또는 텔레그램 봇 토큰)
+5. apt-advisor 사이트를 먼저 배포하고, 그 사이트의 URL과 `SYNC_TOKEN`을 준비 (apt-advisor의 README 참고)
 
 ### 2) ⚠️ 청약홈 엔드포인트 확인 (필수, 5분)
 
@@ -71,14 +76,16 @@
 | `CHEONGYAK_SERVICE_KEY` | 청약홈 API 서비스키 |
 | `RTMS_SERVICE_KEY` | 국토부 실거래가 API 서비스키 |
 | `CLAUDE_API_KEY` | Anthropic API 키 |
-| `SLACK_WEBHOOK_URL` | Slack Incoming Webhook URL |
+| `SITE_URL` | apt-advisor 배포 URL (예: `https://apt-advisor.xxxx.workers.dev`) |
+| `SITE_SYNC_TOKEN` | apt-advisor에 `wrangler secret put SYNC_TOKEN`으로 등록한 것과 동일한 값 |
 | `MY_PROFILE_JSON` | profile.example.json 내용을 본인 값으로 채운 한 줄 JSON 문자열 |
 
 ### 5) 로컬에서 먼저 테스트
 
 ```bash
 pip install -r requirements.txt
-export CHEONGYAK_SERVICE_KEY=... RTMS_SERVICE_KEY=... CLAUDE_API_KEY=... SLACK_WEBHOOK_URL=...
+export CHEONGYAK_SERVICE_KEY=... RTMS_SERVICE_KEY=... CLAUDE_API_KEY=...
+export SITE_URL=... SITE_SYNC_TOKEN=...
 export MY_PROFILE_JSON="$(cat config/profile.example.json)"
 python src/main.py
 ```
@@ -93,8 +100,8 @@ src/main.py                         # 오케스트레이터
 src/cheongyak_api.py                # 청약홈 API 클라이언트
 src/rtms_api.py                     # 국토부 실거래가 API 클라이언트
 src/analyzer.py                     # 안전마진·DSR 계산
-src/claude_advisor.py               # Claude 프롬프트 조립·호출
-src/notifier.py                     # Slack 알림
+src/claude_advisor.py               # Claude 프롬프트 조립·호출, 블로그 참고자료 웹검색
+src/site_sync.py                    # apt-advisor 사이트로 결과 전송
 config/profile.example.json         # 개인 프로필 예시 (실제 값은 절대 커밋 금지)
 ```
 
