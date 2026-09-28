@@ -233,28 +233,58 @@ def _to_int(value) -> int | None:
     return int(cleaned) if cleaned.isdigit() else None
 
 
-def fetch_blog_references(house_name: str) -> tuple[dict | None, dict | None]:
+MHB_DOMAIN = "mhb-blog.com"
+HOMEDUBU_DOMAIN = "homedubu.com"
+
+
+def _ref_seen_key(domain: str, notice_id: str) -> str:
+    """블로그 참고자료 검색의 "도메인별" 완료 여부를 seen_ids에 기록하는 키.
+
+    variant_id(공고+주택형)와는 별개 개념 - 참고자료는 단지(공고) 단위지 주택형
+    단위가 아니고, "성공(글 찾음 또는 없음 확정)"과 "실패(재시도 필요)"를 도메인별로
+    독립적으로 추적해야 한 쪽만 실패했을 때 그 쪽만 다시 시도할 수 있다.
+    """
+    return f"ref:{domain}:{notice_id}"
+
+
+def fetch_blog_references(house_name: str, notice_id: str, seen_ids: set[str]) -> tuple[dict | None, dict | None]:
     """mhb-blog/homedubu 참고자료를 동시에 검색해서 (mhb_reference, homedubu_reference)로 반환.
+
+    이미 성공(글을 찾았거나 "없음"으로 확정)한 도메인은 seen_ids에 ref:{domain}:{notice_id}로
+    기록돼 있어서 건너뛴다. 타임아웃/API 오류로 실패한 도메인은 기록하지 않으므로 다음
+    실행에서 그 도메인만 다시 시도된다 - 이미 찾은 다른 도메인 참고자료를 헛되이 다시
+    검색하며 비용을 낭비하지 않는다.
 
     둘 다 Claude API에 웹검색 포함 요청을 보내는데(최악의 경우 각각 최대 55초),
     순차로 하면 공고 하나당 최대 110초까지 걸려서 job 타임아웃 위험이 커진다.
     서로 완전히 독립적인 조회라 동시에 실행해서 대기 시간을 절반(최대 55초)으로 줄인다.
     """
+    mhb_key = _ref_seen_key(MHB_DOMAIN, notice_id)
+    homedubu_key = _ref_seen_key(HOMEDUBU_DOMAIN, notice_id)
+
+    mhb_reference: dict | None = None
+    homedubu_reference: dict | None = None
+
     with ThreadPoolExecutor(max_workers=2) as executor:
-        mhb_future = executor.submit(claude_advisor.find_mhb_blog_reference, house_name)
-        homedubu_future = executor.submit(claude_advisor.find_homedubu_reference, house_name)
+        futures = {}
+        if mhb_key not in seen_ids:
+            futures["mhb"] = executor.submit(claude_advisor.find_mhb_blog_reference, house_name)
+        if homedubu_key not in seen_ids:
+            futures["homedubu"] = executor.submit(claude_advisor.find_homedubu_reference, house_name)
 
-        try:
-            mhb_reference = mhb_future.result()
-        except Exception as e:  # noqa: BLE001
-            print(f"[main] mhb-blog 참고 자료 검색 실패({house_name}): {e}")
-            mhb_reference = None
+        if "mhb" in futures:
+            try:
+                mhb_reference = futures["mhb"].result()
+                seen_ids.add(mhb_key)  # 성공(글 찾음 또는 없음 확정) - 재시도 불필요
+            except Exception as e:  # noqa: BLE001
+                print(f"[main] mhb-blog 참고 자료 검색 실패({house_name}): {e} - 다음 실행에서 재시도")
 
-        try:
-            homedubu_reference = homedubu_future.result()
-        except Exception as e:  # noqa: BLE001
-            print(f"[main] homedubu 참고 자료 검색 실패({house_name}): {e}")
-            homedubu_reference = None
+        if "homedubu" in futures:
+            try:
+                homedubu_reference = futures["homedubu"].result()
+                seen_ids.add(homedubu_key)
+            except Exception as e:  # noqa: BLE001
+                print(f"[main] homedubu 참고 자료 검색 실패({house_name}): {e} - 다음 실행에서 재시도")
 
     return mhb_reference, homedubu_reference
 
@@ -297,17 +327,27 @@ def main() -> None:
 
         new_variant_ids = [v["variant_id"] for v in type_variants if v["variant_id"] not in seen_ids]
         is_new_notice = bool(new_variant_ids)
+        # 참고자료 검색은 "주택형"이 아니라 "공고(단지)" 단위 + 도메인별로 완료 여부를 본다 -
+        # 지난번에 mhb-blog는 성공하고 homedubu만 타임아웃 났으면, 이번엔 homedubu만 재시도한다.
+        refs_incomplete = (
+            _ref_seen_key(MHB_DOMAIN, notice_id) not in seen_ids
+            or _ref_seen_key(HOMEDUBU_DOMAIN, notice_id) not in seen_ids
+        )
 
         if is_new_notice:
-            # Claude 호출(블로그 웹검색)은 비용/시간이 커서 공고당 딱 1번만 한다.
-            # AI 추천 문구는 만들지 않기로 함 - 참고 URL만 제공한다.
             new_notice_count += 1
+
+        if is_new_notice or refs_incomplete:
+            # Claude 호출(블로그 웹검색)은 비용/시간이 커서 도메인당 성공할 때까지만 재시도한다.
+            # AI 추천 문구는 만들지 않기로 함 - 참고 URL만 제공한다.
             house_name = type_variants[0].get("house_name")
-            mhb_reference, homedubu_reference = fetch_blog_references(house_name)
+            mhb_reference, homedubu_reference = fetch_blog_references(house_name, notice_id, seen_ids)
             references = reference_finder.find_all_references(mhb_reference, homedubu_reference)
+            # references가 빈 리스트([])여도 그대로 보낸다 - apt-advisor 쪽이 기존 값과
+            # 병합(merge)하므로, 이번에 새로 못 찾은 도메인이 있어도 예전에 이미 찾아둔
+            # 다른 도메인 참고자료를 지우지 않는다.
         else:
-            # 이미 한 번 Claude 처리를 마친 공고 - None을 보내면 site_sync/사이트 쪽에서
-            # 기존에 저장된 references를 그대로 유지하고 덮어쓰지 않는다.
+            # 두 도메인 다 이미 완료된 공고 - 참고자료 관련 호출 자체를 안 함.
             references = None
 
         # 동기화가 실패해도(사이트 다운 등) 아래에서 seen_ids에는 그대로 추가한다 - 일시적

@@ -37,7 +37,10 @@ def _find_blog_reference(house_name: str, domain: str) -> dict | None:
     인프라에서 나가므로 이 문제들을 우회한다. allowed_domains로 검색 범위를
     domain 하나로 한정한다.
 
-    못 찾거나 실패하면 None (참고자료는 "있으면 좋은" 보조 정보라 실패해도 조용히 넘어감).
+    ⚠️ 실패(네트워크 오류/타임아웃/응답 파싱 실패)하면 예외를 던진다 - 호출하는 쪽
+    (main.py)이 "이번엔 실패했으니 다음 실행에서 이 도메인만 재시도"할 수 있게 하기
+    위함이다. "글이 없다"고 명확히 확인된 경우만 None을 반환한다 - 이건 재시도해도
+    결과가 바뀔 일이 없는 정상 완료 상태다.
     """
     prompt = f"""{domain} 사이트에서 "{house_name}" 아파트 청약과 관련된 글이 있는지 찾아줘.
 관련 글이 여러 개(회차별로 따로 있는 경우 등)면 이 단지명과 가장 정확히 일치하는
@@ -46,33 +49,28 @@ def _find_blog_reference(house_name: str, domain: str) -> dict | None:
 
 {{"url": "https://{domain}/..." 또는 null, "title": "글 제목" 또는 null}}"""
 
-    try:
-        resp = requests.post(
-            ANTHROPIC_API_URL,
-            headers={
-                "x-api-key": _get_api_key(),
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
-            json={
-                "model": MODEL,
-                "max_tokens": 1024,
-                "tools": [{
-                    "type": "web_search_20260209",
-                    "name": "web_search",
-                    "allowed_domains": [domain],
-                    "max_uses": 3,
-                }],
-                "messages": [{"role": "user", "content": prompt}],
-            },
-            timeout=55,  # 웹검색이 포함돼서 일반 텍스트 응답보다 오래 걸릴 수 있음
-        )
-        resp.raise_for_status()
-        data = resp.json()
-    except requests.RequestException as e:
-        detail = e.response.text[:300] if e.response is not None else ""
-        print(f"[claude_advisor] {domain} 웹검색 실패({house_name!r}): {e} | 응답: {detail}")
-        return None
+    resp = requests.post(
+        ANTHROPIC_API_URL,
+        headers={
+            "x-api-key": _get_api_key(),
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        },
+        json={
+            "model": MODEL,
+            "max_tokens": 1024,
+            "tools": [{
+                "type": "web_search_20260209",
+                "name": "web_search",
+                "allowed_domains": [domain],
+                "max_uses": 3,
+            }],
+            "messages": [{"role": "user", "content": prompt}],
+        },
+        timeout=55,  # 웹검색이 포함돼서 일반 텍스트 응답보다 오래 걸릴 수 있음
+    )
+    resp.raise_for_status()  # 실패하면 requests.HTTPError를 그대로 던짐 - 호출부에서 처리
+    data = resp.json()
 
     text = "\n".join(
         block["text"] for block in data.get("content", [])
@@ -81,14 +79,10 @@ def _find_blog_reference(house_name: str, domain: str) -> dict | None:
 
     m = re.search(r'\{.*"url".*\}', text, re.DOTALL)
     if not m:
-        print(f"[claude_advisor] {domain} 웹검색: 응답에서 JSON을 못 찾음 ({house_name!r}): {text!r}")
-        return None
+        # 응답 형식 자체가 예상과 다른 경우 - "없다"고 확인된 게 아니므로 재시도 대상.
+        raise ClaudeAdvisorError(f"{domain} 웹검색: 응답에서 JSON을 못 찾음 ({house_name!r}): {text!r}")
 
-    try:
-        result = json.loads(m.group(0))
-    except json.JSONDecodeError as e:
-        print(f"[claude_advisor] {domain} 웹검색: JSON 파싱 실패({house_name!r}): {e}")
-        return None
+    result = json.loads(m.group(0))  # 파싱 실패 시 json.JSONDecodeError가 그대로 전파됨
 
     url = result.get("url")
     title = result.get("title")
