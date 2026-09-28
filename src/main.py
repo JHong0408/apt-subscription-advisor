@@ -241,19 +241,44 @@ def _ref_seen_key(domain: str, notice_id: str) -> str:
     """블로그 참고자료 검색의 "도메인별" 완료 여부를 seen_ids에 기록하는 키.
 
     variant_id(공고+주택형)와는 별개 개념 - 참고자료는 단지(공고) 단위지 주택형
-    단위가 아니고, "성공(글 찾음 또는 없음 확정)"과 "실패(재시도 필요)"를 도메인별로
-    독립적으로 추적해야 한 쪽만 실패했을 때 그 쪽만 다시 시도할 수 있다.
+    단위가 아니고, "성공(글 찾음 또는 없음 최종 확정)"과 "실패(재시도 필요)"를
+    도메인별로 독립적으로 추적해야 한 쪽만 실패했을 때 그 쪽만 다시 시도할 수 있다.
     """
     return f"ref:{domain}:{notice_id}"
+
+
+def _ref_notfound_once_key(domain: str, notice_id: str) -> str:
+    """"없음"이 처음 한 번 나왔음을 기록하는 임시 키 (아직 최종 확정 아님).
+
+    웹검색은 최대 3번의 시도 안에서의 최선의 판단이라(인터넷 전체를 뒤진 게
+    아님), 한 번의 "없음"만으로 영구 확정하면 실제로 있는 글을 놓칠 수 있다.
+    그래서 "없음"이 두 번 연속 나와야만 최종 확정하고, 그전까지는 다음 실행에서
+    한 번 더 재시도한다.
+    """
+    return f"ref-notfound-once:{domain}:{notice_id}"
+
+
+def _record_ref_result(domain: str, notice_id: str, result: dict | None, seen_ids: set[str]) -> None:
+    key = _ref_seen_key(domain, notice_id)
+    if result is not None:
+        seen_ids.add(key)  # 글을 찾음 - 바로 최종 확정
+        return
+
+    once_key = _ref_notfound_once_key(domain, notice_id)
+    if once_key in seen_ids:
+        seen_ids.add(key)  # "없음"이 두 번째로도 나옴 - 이제 최종 확정
+    else:
+        seen_ids.add(once_key)  # 첫 "없음" - 아직 확정하지 않고 재시도 대상으로 남김
 
 
 def fetch_blog_references(house_name: str, notice_id: str, seen_ids: set[str]) -> tuple[dict | None, dict | None]:
     """mhb-blog/homedubu 참고자료를 동시에 검색해서 (mhb_reference, homedubu_reference)로 반환.
 
-    이미 성공(글을 찾았거나 "없음"으로 확정)한 도메인은 seen_ids에 ref:{domain}:{notice_id}로
-    기록돼 있어서 건너뛴다. 타임아웃/API 오류로 실패한 도메인은 기록하지 않으므로 다음
-    실행에서 그 도메인만 다시 시도된다 - 이미 찾은 다른 도메인 참고자료를 헛되이 다시
-    검색하며 비용을 낭비하지 않는다.
+    이미 최종 확정(글을 찾았거나, "없음"이 두 번 연속 나옴)된 도메인은 seen_ids에
+    ref:{domain}:{notice_id}로 기록돼 있어서 건너뛴다. 타임아웃/API 오류로 실패했거나
+    "없음"이 처음 한 번만 나온 도메인은 최종 확정하지 않으므로 다음 실행에서 그
+    도메인만 다시 시도된다 - 이미 확정된 다른 도메인 참고자료를 헛되이 다시 검색하며
+    비용을 낭비하지 않는다 (자세한 확정 규칙은 _record_ref_result 참고).
 
     둘 다 Claude API에 웹검색 포함 요청을 보내는데(최악의 경우 각각 최대 55초),
     순차로 하면 공고 하나당 최대 110초까지 걸려서 job 타임아웃 위험이 커진다.
@@ -275,14 +300,14 @@ def fetch_blog_references(house_name: str, notice_id: str, seen_ids: set[str]) -
         if "mhb" in futures:
             try:
                 mhb_reference = futures["mhb"].result()
-                seen_ids.add(mhb_key)  # 성공(글 찾음 또는 없음 확정) - 재시도 불필요
+                _record_ref_result(MHB_DOMAIN, notice_id, mhb_reference, seen_ids)
             except Exception as e:  # noqa: BLE001
                 print(f"[main] mhb-blog 참고 자료 검색 실패({house_name}): {e} - 다음 실행에서 재시도")
 
         if "homedubu" in futures:
             try:
                 homedubu_reference = futures["homedubu"].result()
-                seen_ids.add(homedubu_key)
+                _record_ref_result(HOMEDUBU_DOMAIN, notice_id, homedubu_reference, seen_ids)
             except Exception as e:  # noqa: BLE001
                 print(f"[main] homedubu 참고 자료 검색 실패({house_name}): {e} - 다음 실행에서 재시도")
 
