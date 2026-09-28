@@ -9,13 +9,13 @@
    -- 여기까지는 "접수중인 공고 전부"에 대해 매일 다시 계산한다 (Claude 호출이
    아니라 RTMS 조회라 비용 부담이 없고, 사이트에서 항상 최신 안전마진을 보여주기 위함).
 5. "공고+주택형" 조합이 seen_notices.json에 이미 있으면(=예전에 한 번 처리한 적
-   있으면) Claude 호출(추천 문구 생성 + homedubu.com/mhb-blog.com 참고자료 웹검색,
-   reference_finder.py)은 건너뛴다 - 이 부분만 비용/시간이 크기 때문에 공고당 딱 1번만.
+   있으면) Claude 웹검색(homedubu.com/mhb-blog.com 참고자료, reference_finder.py)은
+   건너뛴다 - 이 부분만 비용/시간이 크기 때문에 공고당 딱 1번만. AI 추천 문구는 만들지
+   않는다 - 참고 URL만 제공한다.
 6. apt-advisor 사이트(Cloudflare Worker + D1)로 결과를 전송한다 (site_sync.py).
-   신규 처리를 건너뛴 공고는 recommendation/references를 None으로 보내서, 사이트에
-   이미 저장된 값을 덮어쓰지 않고 안전마진/대출한도만 최신화한다. 알림 채널은 Slack이
-   아니라 이 사이트 하나뿐이고, 로그인해서 전체 접수중인 공고 검색 + 신규 공고 배지를
-   확인한다.
+   신규 처리를 건너뛴 공고는 references를 None으로 보내서, 사이트에 이미 저장된 값을
+   덮어쓰지 않고 안전마진/대출한도만 최신화한다. 알림 채널은 Slack이 아니라 이 사이트
+   하나뿐이고, 로그인해서 전체 접수중인 공고 검색 + 신규 공고 배지를 확인한다.
 """
 from __future__ import annotations
 
@@ -293,25 +293,20 @@ def main() -> None:
         is_new_notice = bool(new_variant_ids)
 
         if is_new_notice:
-            # Claude 호출(추천 문구 + 블로그 웹검색)은 비용/시간이 커서 공고당 딱 1번만 한다.
+            # Claude 호출(블로그 웹검색)은 비용/시간이 커서 공고당 딱 1번만 한다.
+            # AI 추천 문구는 만들지 않기로 함 - 참고 URL만 제공한다.
             new_notice_count += 1
-            try:
-                recommendation = claude_advisor.get_recommendation_multi(analyzed_types, profile)
-            except Exception as e:  # noqa: BLE001
-                recommendation = f"(AI 추천 생성 실패: {e})"
-
             house_name = type_variants[0].get("house_name")
             mhb_reference, homedubu_reference = fetch_blog_references(house_name)
             references = reference_finder.find_all_references(mhb_reference, homedubu_reference)
         else:
             # 이미 한 번 Claude 처리를 마친 공고 - None을 보내면 site_sync/사이트 쪽에서
-            # 기존에 저장된 recommendation/references를 그대로 유지하고 덮어쓰지 않는다.
-            recommendation = None
+            # 기존에 저장된 references를 그대로 유지하고 덮어쓰지 않는다.
             references = None
 
         # 동기화가 실패해도(사이트 다운 등) 아래에서 seen_ids에는 그대로 추가한다 - 일시적
         # 전송 실패로 같은 공고를 매일 Claude로 재처리하며 비용을 낭비하지 않기 위함.
-        if site_sync.sync_notice(notice_id, analyzed_types, recommendation, references):
+        if site_sync.sync_notice(notice_id, analyzed_types, references):
             synced_count += 1
 
         for v in type_variants:
@@ -325,7 +320,6 @@ def main() -> None:
                     {"notice": a["variant"], "margin": a["margin"], "loan": a["loan"]}
                     for a in analyzed_types
                 ],
-                "recommendation": recommendation,
                 "references": references,
             },
             ensure_ascii=False,

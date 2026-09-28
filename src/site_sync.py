@@ -7,9 +7,11 @@ POST /api/sync를 호출한다.
 동기화 실패(사이트 다운, 네트워크 오류 등)가 파이프라인 전체를 막으면 안 되므로 항상
 예외를 삼키고 로깅만 한다 - main.py는 이 함수의 반환값(성공 여부)만 보고 계속 진행한다.
 
-recommendation/references가 None이면 "이 공고는 이미 Claude 처리를 마쳤으니 건드리지
-마라"는 신호다. site/src/index.js의 /api/sync 핸들러가 이 필드들이 없으면 사이트에
-저장된 기존 값을 그대로 유지하도록 되어 있다 (덮어써서 지우지 않음).
+references가 None이면 "이 공고는 이미 Claude 처리를 마쳤으니 건드리지 마라"는 신호다.
+site/src/index.js의 /api/sync 핸들러가 이 필드가 없으면 사이트에 저장된 기존 값을
+그대로 유지하도록 되어 있다 (덮어써서 지우지 않음).
+
+AI 추천 문구는 만들지 않는다 - 참고 URL만 제공한다.
 """
 from __future__ import annotations
 
@@ -25,7 +27,6 @@ SYNC_TIMEOUT_SECONDS = 10
 def sync_notice(
     notice_id: str,
     analyzed_types: list[dict],
-    recommendation: str | None,
     references: list[dict] | None,
 ) -> bool:
     """사이트에 성공적으로 저장됐으면 True, 실패했거나 미설정이면 False."""
@@ -45,7 +46,6 @@ def sync_notice(
         "reception_start_date": base.get("reception_start_date"),
         "reception_end_date": base.get("reception_end_date"),
         "notice_url": base.get("notice_url"),
-        "recommendation": recommendation,
         "references": references,
         "types": [
             {
