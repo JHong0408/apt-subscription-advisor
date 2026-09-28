@@ -38,6 +38,13 @@ import reference_finder
 SEEN_FILE = Path("seen_notices.json")
 RUN_LOG_FILE = Path("run_log.jsonl")
 
+# RTMS(실거래가) 조회가 연속으로 이 횟수만큼 실패하면(타임아웃 등) 공공데이터포털 자체
+# 장애로 보고, 이번 실행 남은 동안은 RTMS 조회를 전부 건너뛴다 - 지역마다 매번 15초
+# 타임아웃을 기다리다 20분 job 타임아웃에 걸리는 걸 막기 위함. 성공하면 카운트 리셋.
+RTMS_CIRCUIT_BREAKER_THRESHOLD = 3
+_rtms_consecutive_failures = 0
+_rtms_circuit_open = False
+
 # 블로그 참고자료 검색(Claude 웹서치) on/off 스위치. 끄려면 False로.
 ENABLE_BLOG_SEARCH = True
 
@@ -202,12 +209,22 @@ def analyze_notice(notice: dict, profile: dict) -> tuple[dict, dict]:
     # 만원 단위 → 원 단위로 변환 (RTMS 실거래가와 단위를 맞추기 위함)
     price_krw = price_manwon * 10_000 if price_manwon is not None else 0
 
+    global _rtms_consecutive_failures, _rtms_circuit_open
+
     comparable_trades: list[dict] = []
-    if region and area:
+    if region and area and not _rtms_circuit_open:
         try:
             comparable_trades = rtms_api.find_comparable_trades(region, float(area))
+            _rtms_consecutive_failures = 0
         except Exception as e:  # noqa: BLE001
             print(f"[main] 실거래가 조회 실패({region}): {e}")
+            _rtms_consecutive_failures += 1
+            if _rtms_consecutive_failures >= RTMS_CIRCUIT_BREAKER_THRESHOLD:
+                _rtms_circuit_open = True
+                print(
+                    f"[main] 실거래가 조회 연속 {RTMS_CIRCUIT_BREAKER_THRESHOLD}회 실패 - "
+                    "공공데이터포털 장애로 보고 이번 실행에서는 RTMS 조회를 건너뜁니다"
+                )
 
     margin = analyzer.compute_safety_margin(price_krw, comparable_trades)
 
