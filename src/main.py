@@ -163,7 +163,10 @@ def expand_with_house_types(notice: dict, min_area_sqm: float) -> list[dict]:
         variant = dict(notice)
         variant["house_ty"] = model.get("house_ty")
         variant["area_sqm"] = area
-        variant["price_manwon"] = model.get("price_manwon")
+        # 청약홈 API가 분양가를 콤마 포함 문자열("66,460")로 줄 때가 있어서, 화면 표시용
+        # 값도 analyze_notice()의 계산용 값과 동일하게 여기서 정수로 정리해둔다 (안 그러면
+        # 계산은 맞는데 사이트에 보여주는 분양가만 콤마 때문에 NaN으로 깨짐).
+        variant["price_manwon"] = _to_int(model.get("price_manwon"))
         variant["variant_id"] = f"{pblanc_no}:{model.get('house_ty') or 'unknown'}"
         variants.append(variant)
 
