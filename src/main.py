@@ -191,7 +191,9 @@ def group_all_variants_by_notice(variants: list[dict]) -> dict[str, list[dict]]:
 
 
 def analyze_notice(notice: dict, profile: dict) -> tuple[dict, dict]:
-    region = cheongyak_api.extract_region(notice.get("address", ""))
+    address = notice.get("address", "")
+    region = cheongyak_api.extract_region(address)
+    region_type = cheongyak_api.classify_region_type(address)
     area = notice.get("area_sqm")
     price_manwon = _to_int(notice.get("price_manwon"))
     # 만원 단위 → 원 단위로 변환 (RTMS 실거래가와 단위를 맞추기 위함)
@@ -206,14 +208,18 @@ def analyze_notice(notice: dict, profile: dict) -> tuple[dict, dict]:
 
     margin = analyzer.compute_safety_margin(price_krw, comparable_trades)
 
-    is_homeowner = profile.get("subscription_status", {}).get("is_homeowner", False)
-    ltv = 0.70 if not is_homeowner and not profile["subscription_status"].get(
-        "used_first_time_buyer_benefit") else 0.40
+    subscription_status = profile.get("subscription_status", {})
+    preferences = profile.get("preferences", {})
 
     loan = analyzer.estimate_loan_capacity(
         price_krw=price_krw,
         annual_income_krw=profile.get("income", {}).get("annual_salary_krw", 0),
-        ltv_ratio=ltv,
+        region=region_type,
+        home_status=subscription_status.get("home_status", "none"),
+        is_first_time_buyer=subscription_status.get("is_first_time_buyer", False),
+        existing_annual_debt_service_krw=profile.get("income", {}).get(
+            "existing_annual_debt_service_krw", 0),
+        interest_rate=preferences.get("assumed_interest_rate", 0.042),
     )
     return margin, loan
 

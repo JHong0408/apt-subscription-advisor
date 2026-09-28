@@ -194,6 +194,40 @@ def extract_region(address: str) -> str | None:
     return None
 
 
+# 2026-09-28 기준 10.15 부동산 대책의 투기과열지구/조정대상지역(=규제지역) 지정 현황
+# (서울 25개구 전역 + 경기 12곳). 정부가 수시로 재지정하는 목록이라 시간이 지나면
+# 다시 확인이 필요하다 - analyzer.py의 LTV/대출한도 계산에서 지역별 규제 강도를
+# 판정하는 데 쓰인다 (한국부동산원 청약홈 SUBSCRPT_AREA_CODE_NM과는 별개 분류).
+#
+# 성남시/수원시는 지정된 3개 구(분당·수정·중원 / 영통·장안·팔달)가 전부 규제지역이라,
+# 주소에 구까지 안 나오고 시 이름만 잡혀도 안전하게 규제지역으로 분류한다. 반면
+# 안양시(동안구만 규제, 만안구는 아님)·용인시(수지구만 규제, 처인·기흥구는 아님)는
+# 구가 섞여 있어서 시 이름만으로는 판정할 수 없다 - extract_gyeonggi_region()이 구까지
+# 못 찾으면(주소에 구 표기가 없으면) 이 목록에 안 걸려서 수도권 비규제로 판정된다.
+REGULATED_GYEONGGI_REGIONS = {
+    "과천시", "광명시", "의왕시", "하남시",
+    "성남시", "성남시 분당구", "성남시 수정구", "성남시 중원구",
+    "수원시", "수원시 영통구", "수원시 장안구", "수원시 팔달구",
+    "안양시 동안구",
+    "용인시 수지구",
+}
+
+
+def classify_region_type(address: str) -> str:
+    """analyzer.py의 estimate_loan_capacity(region=...)에 넘길 3단계 분류.
+
+    반환값: "regulated"(규제지역) | "capital_nonregulated"(수도권 비규제) | "local"(지방)
+    """
+    if is_seoul(address):
+        return "regulated"  # 서울은 25개구 전역이 규제지역
+
+    if is_gyeonggi(address):
+        region = extract_gyeonggi_region(address)
+        return "regulated" if region in REGULATED_GYEONGGI_REGIONS else "capital_nonregulated"
+
+    return "local"
+
+
 def is_target_region(address: str, prefer_regions: list[str] | None = None) -> bool:
     """profile["preferences"]["prefer_regions"]에 맞춰 주소가 관심 지역인지 판단.
 

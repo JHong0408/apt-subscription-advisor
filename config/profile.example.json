@@ -3,14 +3,15 @@
 
   "income": {
     "annual_salary_krw": 10,
-    "note": "연소득 - DSR 대략치 계산에 사용됨"
+    "existing_annual_debt_service_krw": 0,
+    "note": "annual_salary_krw=연소득. existing_annual_debt_service_krw=기존에 매년 갚고 있는 다른 대출의 원리금(있으면) - DSR 한도 계산 시 이만큼 차감됨, 없으면 0."
   },
 
   "subscription_status": {
-    "is_homeowner": false,
-    "used_first_time_buyer_benefit": false,
+    "home_status": "none",
+    "is_first_time_buyer": false,
     "reapplication_restricted_until": null,
-    "note": "reapplication_restricted_until는 재당첨제한 걸려있다면 'YYYY-MM-DD', 없으면 null. 현재 코드에서 실제로 읽지는 않음(참고용)."
+    "note": "home_status: 'none'(무주택) | 'conditional_disposal'(처분조건부 1주택, 무주택과 동일 취급) | 'owner'(유주택, 처분조건 없음 - 수도권/규제지역은 대출 자체가 안 나옴). is_first_time_buyer: 세대원 전원이 주택을 소유한 적 없는지 여부(생애최초 특별공급 '사용 이력'과는 다른 개념 - LTV 우대율 판정에 씀). reapplication_restricted_until: 재당첨제한 걸려있다면 'YYYY-MM-DD', 없으면 null(현재 코드에서 실제로 읽지는 않음, 참고용)."
   },
 
   "location": {
@@ -23,6 +24,8 @@
   "preferences": {
     "min_area_sqm": 36,
     "prefer_regions": ["서울", "경기"],
-    "prefer_regions_note": "\"서울\", \"경기\" 중 원하는 것만 넣으면 그 지역만 필터링됨 (예: [\"서울\"]만 넣으면 서울만)"
+    "prefer_regions_note": "\"서울\", \"경기\" 중 원하는 것만 넣으면 그 지역만 필터링됨 (예: [\"서울\"]만 넣으면 서울만)",
+    "assumed_interest_rate": 0.0433,
+    "assumed_interest_rate_note": "대출한도 계산에 쓰는 예상 금리(2026-09-28 기준 5대 은행 주담대 변동금리 평균 4.33%) - 시장금리 변동에 따라 주기적으로 갱신 필요"
   }
 }
