@@ -38,9 +38,8 @@ import reference_finder
 SEEN_FILE = Path("seen_notices.json")
 RUN_LOG_FILE = Path("run_log.jsonl")
 
-# 일반분양(1·2순위·특공)까지 수집 범위를 넓히면서, 공고량이 늘어난 만큼 Claude 비용도
-# 같이 늘어나는 걸 막기 위해 블로그 참고자료 검색을 임시로 꺼둔다. 다시 켜려면 True로.
-ENABLE_BLOG_SEARCH = False
+# 블로그 참고자료 검색(Claude 웹서치) on/off 스위치. 끄려면 False로.
+ENABLE_BLOG_SEARCH = True
 
 KST = timezone(timedelta(hours=9))
 
