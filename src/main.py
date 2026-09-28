@@ -38,6 +38,10 @@ import reference_finder
 SEEN_FILE = Path("seen_notices.json")
 RUN_LOG_FILE = Path("run_log.jsonl")
 
+# 일반분양(1·2순위·특공)까지 수집 범위를 넓히면서, 공고량이 늘어난 만큼 Claude 비용도
+# 같이 늘어나는 걸 막기 위해 블로그 참고자료 검색을 임시로 꺼둔다. 다시 켜려면 True로.
+ENABLE_BLOG_SEARCH = False
+
 KST = timezone(timedelta(hours=9))
 
 
@@ -98,7 +102,7 @@ def collect_candidate_notices(prefer_regions: list[str] | None = None) -> list[d
     out_of_region_count = 0
     raw_total = 0
 
-    for endpoint_key in ("apt_remainder", "arbitrary_supply"):
+    for endpoint_key in ("apt_general", "apt_remainder", "arbitrary_supply"):
         try:
             raw_list = cheongyak_api.fetch_all_notices(endpoint_key)
         except Exception as e:  # noqa: BLE001 - 개인용 배치라 단순 로깅 후 계속 진행
@@ -109,7 +113,7 @@ def collect_candidate_notices(prefer_regions: list[str] | None = None) -> list[d
         print(f"[main] {endpoint_key} 원본 {len(raw_list)}건 수신")
 
         for raw in raw_list:
-            notice = cheongyak_api.parse_notice(raw)
+            notice = cheongyak_api.parse_notice(raw, endpoint_key)
             notice["_endpoint_key"] = endpoint_key  # 주택형 상세 조회 시 어느 Mdl 엔드포인트를 쓸지 기억
 
             if not cheongyak_api.is_target_region(notice.get("address", ""), prefer_regions):
@@ -362,7 +366,7 @@ def main() -> None:
         if is_new_notice:
             new_notice_count += 1
 
-        if is_new_notice or refs_incomplete:
+        if ENABLE_BLOG_SEARCH and (is_new_notice or refs_incomplete):
             # Claude 호출(블로그 웹검색)은 비용/시간이 커서 도메인당 성공할 때까지만 재시도한다.
             # AI 추천 문구는 만들지 않기로 함 - 참고 URL만 제공한다.
             house_name = type_variants[0].get("house_name")
@@ -372,7 +376,9 @@ def main() -> None:
             # 병합(merge)하므로, 이번에 새로 못 찾은 도메인이 있어도 예전에 이미 찾아둔
             # 다른 도메인 참고자료를 지우지 않는다.
         else:
-            # 두 도메인 다 이미 완료된 공고 - 참고자료 관련 호출 자체를 안 함.
+            # 두 도메인 다 이미 완료된 공고이거나, ENABLE_BLOG_SEARCH가 꺼져있는 경우 -
+            # 참고자료 관련 호출 자체를 안 함. 꺼져있는 동안은 seen_ids의 ref: 키도 안 건드리므로,
+            # 나중에 다시 켜면 그때부터 정상적으로 검색을 재개한다.
             references = None
 
         # 동기화가 실패해도(사이트 다운 등) 아래에서 seen_ids에는 그대로 추가한다 - 일시적

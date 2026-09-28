@@ -253,28 +253,46 @@ def is_target_region(address: str, prefer_regions: list[str] | None = None) -> b
     return is_seoul(address) or is_gyeonggi(address)
 
 
-def parse_notice(raw: dict) -> dict:
+# 접수 시작/종료일 필드명이 엔드포인트마다 다르다 - apt_general(일반분양, 1·2순위/특공)은
+# RCEPT_BGNDE/RCEPT_ENDDE를, 나머지(무순위/임의공급)는 SUBSCRPT_RCEPT_BGNDE/ENDDE를 쓴다
+# (home-main의 apt_listings/remndr_listings 스키마 차이와 동일하게 실제 API 응답으로 확인됨).
+RECEPTION_DATE_FIELDS = {
+    "apt_general": ("RCEPT_BGNDE", "RCEPT_ENDDE"),
+}
+DEFAULT_RECEPTION_DATE_FIELDS = ("SUBSCRPT_RCEPT_BGNDE", "SUBSCRPT_RCEPT_ENDDE")
+
+# 사이트에서 "일반분양(1·2순위·특공)"과 "무순위/임의공급"을 탭으로 나눠 보여주기 위한 분류.
+SUPPLY_CATEGORIES = {
+    "apt_general": "general",
+    "apt_remainder": "remainder",
+    "arbitrary_supply": "remainder",
+}
+
+
+def parse_notice(raw: dict, endpoint_key: str = "apt_remainder") -> dict:
     """공고 개요(*Detail) API 응답 1건을 파이프라인 공통 포맷으로 변환.
 
     실제 응답으로 확인된 필드명 기준(2026-09-17 실제 API 호출로 검증):
-    HOUSE_NM, HSSPLY_ADRES, HOUSE_SECD_NM(공급구분: 무순위/불법행위 재공급 등),
+    HOUSE_NM, HSSPLY_ADRES, HOUSE_SECD_NM(공급구분: 무순위/불법행위 재공급/1순위/2순위/특별공급 등),
     RCRIT_PBLANC_DE, PBLANC_NO, PBLANC_URL 등.
 
     ⚠️ 이 엔드포인트는 면적/분양가를 포함하지 않는다 — 그건 fetch_models()로
     PBLANC_NO를 넘겨 별도 조회해야 한다 (main.py의 expand_with_house_types 참고).
     """
+    start_field, end_field = RECEPTION_DATE_FIELDS.get(endpoint_key, DEFAULT_RECEPTION_DATE_FIELDS)
     return {
         "raw": raw,
         "house_name": raw.get("HOUSE_NM"),
         "address": raw.get("HSSPLY_ADRES"),
         "supply_type": raw.get("HOUSE_SECD_NM"),
+        "supply_category": SUPPLY_CATEGORIES.get(endpoint_key, "remainder"),
         "recruit_date": raw.get("RCRIT_PBLANC_DE"),
         "notice_url": raw.get("PBLANC_URL"),
-        # 신청 접수 시작/종료일. 날짜 형식이 엔드포인트마다 다름(apt_remainder는
-        # "YYYY-MM-DD", arbitrary_supply는 "YYYYMMDD") - 화면 표시는 apt-advisor 사이트
-        # 쪽에서 통일해서 처리한다. 종료일은 main.py에서 이미 마감된 공고를 걸러낼 때도 씀.
-        "reception_start_date": raw.get("SUBSCRPT_RCEPT_BGNDE"),
-        "reception_end_date": raw.get("SUBSCRPT_RCEPT_ENDDE"),
+        # 신청 접수 시작/종료일. 날짜 형식도 엔드포인트마다 다름(예: YYYY-MM-DD vs YYYYMMDD) -
+        # 화면 표시는 apt-advisor 사이트 쪽에서 통일해서 처리한다. 종료일은 main.py에서 이미
+        # 마감된 공고를 걸러낼 때도 씀.
+        "reception_start_date": raw.get(start_field),
+        "reception_end_date": raw.get(end_field),
         # 아래 둘은 이 엔드포인트에 없음 - fetch_models()로 채워지기 전까지는 None
         "area_sqm": None,
         "price_manwon": None,

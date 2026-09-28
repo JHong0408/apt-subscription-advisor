@@ -43,6 +43,7 @@ def sync_notice(
         "address": base.get("address"),
         "region": cheongyak_api.extract_region(base.get("address", "") or ""),
         "supply_type": base.get("supply_type"),
+        "supply_category": base.get("supply_category"),  # "general"(1·2순위/특공) | "remainder"(무순위/임의공급)
         "reception_start_date": base.get("reception_start_date"),
         "reception_end_date": base.get("reception_end_date"),
         "notice_url": base.get("notice_url"),
