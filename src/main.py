@@ -1,18 +1,21 @@
 """
 매일 실행되는 진입점.
 
-1. 청약홈에서 신규 무순위/임의공급 "공고 개요" 수집 (면적/분양가 없음)
+1. 청약홈에서 접수중인 무순위/임의공급 "공고 개요" 수집 (면적/분양가 없음)
 2. 서울/경기(profile.preferences.prefer_regions)로 지역 필터링
 3. 공고마다 주택형별 상세(면적/분양가)를 별도 조회해서 "공고+주택형" 단위로 펼침,
    최소 면적 조건은 여기서 적용 (전용면적 미달 타입만 있는 공고는 자동 제외)
-4. 이미 알림 보낸 "공고+주택형" 조합은 건너뜀 (seen_notices.json)
-5. 국토부 실거래가로 타입별 안전마진 계산
-6. 타입별 대략적 DSR/LTV로 필요 현금 계산
-7. homedubu.com / mhb-blog.com 두 청약 분석 블로그에 관련 게시글이 있으면
-   "참고 자료" 링크로 같이 붙임 (reference_finder.py, 없어도 그냥 생략)
-8. 공고 하나당(타입이 몇 개든) Claude 호출 1번으로 추천 문구를 만들고, apt-advisor
-   사이트(Cloudflare Worker + D1)로 결과를 전송 (site_sync.py). 알림 채널은 Slack이
-   아니라 이 사이트 하나뿐이고, 로그인해서 전체 공고 검색 + 신규 공고 배지를 확인한다.
+4. 국토부 실거래가로 타입별 안전마진 계산, 타입별 대략적 DSR/LTV로 필요 현금 계산
+   -- 여기까지는 "접수중인 공고 전부"에 대해 매일 다시 계산한다 (Claude 호출이
+   아니라 RTMS 조회라 비용 부담이 없고, 사이트에서 항상 최신 안전마진을 보여주기 위함).
+5. "공고+주택형" 조합이 seen_notices.json에 이미 있으면(=예전에 한 번 처리한 적
+   있으면) Claude 호출(추천 문구 생성 + homedubu.com/mhb-blog.com 참고자료 웹검색,
+   reference_finder.py)은 건너뛴다 - 이 부분만 비용/시간이 크기 때문에 공고당 딱 1번만.
+6. apt-advisor 사이트(Cloudflare Worker + D1)로 결과를 전송한다 (site_sync.py).
+   신규 처리를 건너뛴 공고는 recommendation/references를 None으로 보내서, 사이트에
+   이미 저장된 값을 덮어쓰지 않고 안전마진/대출한도만 최신화한다. 알림 채널은 Slack이
+   아니라 이 사이트 하나뿐이고, 로그인해서 전체 접수중인 공고 검색 + 신규 공고 배지를
+   확인한다.
 """
 from __future__ import annotations
 
@@ -167,16 +170,18 @@ def expand_with_house_types(notice: dict, min_area_sqm: float) -> list[dict]:
     return variants
 
 
-def group_new_variants_by_notice(variants: list[dict], seen_ids: set[str]) -> dict[str, list[dict]]:
-    """아직 알림 안 보낸 variant만 골라서 notice_id 기준으로 묶는다.
+def group_all_variants_by_notice(variants: list[dict]) -> dict[str, list[dict]]:
+    """접수중인 variant 전부를 notice_id 기준으로 묶는다 (신규/기존 구분 없이).
 
-    반환값의 각 리스트는 같은 공고(notice_id)의 신규 주택형들이고, 이걸 한데 묶어서
-    공고당 Slack 메시지 1개 + Claude 호출 1번으로 처리한다.
+    사이트 검색이 "지금 접수중인 공고 전체"를 보여줘야 하므로, 예전에 이미 처리한
+    공고도 매일 다시 묶어서 안전마진/대출한도를 최신화해 사이트로 보낸다. "신규
+    여부"(Claude 호출 여부) 판단은 main()에서 variant_id 단위로 seen_ids와 비교해서
+    별도로 한다.
     """
     groups: dict[str, list[dict]] = {}
     for v in variants:
         vid = v.get("variant_id")
-        if not vid or vid in seen_ids:
+        if not vid:
             continue
         groups.setdefault(v["notice_id"], []).append(v)
     return groups
@@ -258,41 +263,51 @@ def main() -> None:
     for notice in notices:
         variants.extend(expand_with_house_types(notice, min_area))
 
-    new_by_notice = group_new_variants_by_notice(variants, seen_ids)
-    total_new_types = sum(len(v) for v in new_by_notice.values())
+    all_by_notice = group_all_variants_by_notice(variants)
 
     print(
         f"[main] 공고 개요 {len(notices)}건 -> 주택형별로 펼친 후보 {len(variants)}건, "
-        f"신규 공고 {len(new_by_notice)}건(타입 {total_new_types}개)"
+        f"접수중인 공고 {len(all_by_notice)}건"
     )
 
-    if not new_by_notice:
-        print("[main] 신규 공고 없음, 종료")
+    if not all_by_notice:
+        print("[main] 접수중인 후보 공고 없음, 종료")
         return
 
     log_lines = []
     synced_count = 0
-    for notice_id, type_variants in new_by_notice.items():
-        # 공고 하나 안의 타입들을 각각 분석(면적/분양가별로 실거래가 비교가 다르므로)한 뒤,
-        # Claude 호출과 사이트 동기화는 공고당 1번으로 묶는다.
+    new_notice_count = 0
+    for notice_id, type_variants in all_by_notice.items():
+        # 공고 하나 안의 타입들을 각각 분석(면적/분양가별로 실거래가 비교가 다르므로)한다.
+        # 이건 매일 다시 계산한다 - RTMS 조회라 비용 부담이 없고, 사이트에 항상 최신
+        # 안전마진/대출한도를 반영하기 위함.
         analyzed_types = []
         for v in type_variants:
             margin, loan = analyze_notice(v, profile)
             analyzed_types.append({"variant": v, "margin": margin, "loan": loan})
 
-        try:
-            recommendation = claude_advisor.get_recommendation_multi(analyzed_types, profile)
-        except Exception as e:  # noqa: BLE001
-            recommendation = f"(AI 추천 생성 실패: {e})"
+        new_variant_ids = [v["variant_id"] for v in type_variants if v["variant_id"] not in seen_ids]
+        is_new_notice = bool(new_variant_ids)
 
-        house_name = type_variants[0].get("house_name")
-        mhb_reference, homedubu_reference = fetch_blog_references(house_name)
+        if is_new_notice:
+            # Claude 호출(추천 문구 + 블로그 웹검색)은 비용/시간이 커서 공고당 딱 1번만 한다.
+            new_notice_count += 1
+            try:
+                recommendation = claude_advisor.get_recommendation_multi(analyzed_types, profile)
+            except Exception as e:  # noqa: BLE001
+                recommendation = f"(AI 추천 생성 실패: {e})"
 
-        references = reference_finder.find_all_references(mhb_reference, homedubu_reference)
+            house_name = type_variants[0].get("house_name")
+            mhb_reference, homedubu_reference = fetch_blog_references(house_name)
+            references = reference_finder.find_all_references(mhb_reference, homedubu_reference)
+        else:
+            # 이미 한 번 Claude 처리를 마친 공고 - None을 보내면 site_sync/사이트 쪽에서
+            # 기존에 저장된 recommendation/references를 그대로 유지하고 덮어쓰지 않는다.
+            recommendation = None
+            references = None
 
-        # 동기화가 실패해도(사이트 다운 등) 아래에서 seen_ids에는 그대로 추가한다 - 원래
-        # Slack 전송도 실패 시 콘솔 출력만 하고 넘어갔던 것과 같은 원칙: 일시적 전송 실패로
-        # 같은 공고를 매일 재시도하며 스팸처럼 반복 알리지 않는다.
+        # 동기화가 실패해도(사이트 다운 등) 아래에서 seen_ids에는 그대로 추가한다 - 일시적
+        # 전송 실패로 같은 공고를 매일 Claude로 재처리하며 비용을 낭비하지 않기 위함.
         if site_sync.sync_notice(notice_id, analyzed_types, recommendation, references):
             synced_count += 1
 
@@ -302,6 +317,7 @@ def main() -> None:
         log_lines.append(json.dumps(
             {
                 "notice_id": notice_id,
+                "is_new": is_new_notice,
                 "types": [
                     {"notice": a["variant"], "margin": a["margin"], "loan": a["loan"]}
                     for a in analyzed_types
@@ -314,7 +330,10 @@ def main() -> None:
 
     save_seen_ids(seen_ids)
     RUN_LOG_FILE.write_text("\n".join(log_lines), encoding="utf-8")
-    print(f"[main] {len(new_by_notice)}건 분석 완료 (타입 {total_new_types}개 포함), 사이트 동기화 {synced_count}건")
+    print(
+        f"[main] 접수중 공고 {len(all_by_notice)}건 분석 완료(신규 {new_notice_count}건), "
+        f"사이트 동기화 {synced_count}건"
+    )
 
 
 if __name__ == "__main__":

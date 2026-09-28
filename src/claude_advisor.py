@@ -113,7 +113,8 @@ def _find_blog_reference(house_name: str, domain: str) -> dict | None:
         resp.raise_for_status()
         data = resp.json()
     except requests.RequestException as e:
-        print(f"[claude_advisor] {domain} 웹검색 실패({house_name!r}): {e}")
+        detail = e.response.text[:300] if e.response is not None else ""
+        print(f"[claude_advisor] {domain} 웹검색 실패({house_name!r}): {e} | 응답: {detail}")
         return None
 
     text = "\n".join(
