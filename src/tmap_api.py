@@ -22,6 +22,7 @@ main.py가 다른 공고 처리를 계속할 수 있게 한다.
 from __future__ import annotations
 
 import os
+import re
 
 import requests
 
@@ -40,8 +41,20 @@ def _get_app_key() -> str:
     return key
 
 
-def geocode_address(address: str) -> tuple[float, float] | None:
-    """도로명/지번 주소 문자열 -> (경도, 위도). 매칭되는 주소가 없으면 None."""
+def _simplify_address(address: str) -> str:
+    """청약 공고 주소는 '~일원 (~공공주택지구 내 A-4블록)'처럼 실제 도로명 주소가 아니라
+    사업지구 설명인 경우가 많아 fullAddrGeo가 400(주소 매칭 실패)을 낸다. 괄호 설명/여러
+    동 나열을 걷어내고 앞 3토큰(시도+시군구+동 순서가 거의 항상 지켜짐)만 남겨서
+    "동 단위 근사치"로라도 지오코딩을 시도한다."""
+    addr = re.sub(r"\([^)]*\)", " ", address)
+    addr = addr.split(",")[0]
+    tokens = addr.split()
+    return " ".join(tokens[:3]).strip()
+
+
+def _request_geocode(address: str) -> tuple[float, float] | None:
+    if not address:
+        return None
     params = {
         "version": 1,
         "fullAddr": address,
@@ -57,6 +70,9 @@ def geocode_address(address: str) -> tuple[float, float] | None:
         headers={"appKey": _get_app_key(), "Accept": "application/json"},
         timeout=15,
     )
+    if resp.status_code == 400:
+        # TMAP 쪽 장애가 아니라 "이 문자열로는 주소를 못 찾음" - 회로차단기 대상 아님.
+        return None
     resp.raise_for_status()
     data = resp.json()
 
@@ -67,6 +83,22 @@ def geocode_address(address: str) -> tuple[float, float] | None:
         return None
     top = candidates[0]
     return float(top["newLon"]), float(top["newLat"])
+
+
+def geocode_address(address: str) -> tuple[float, float] | None:
+    """도로명/지번 주소 문자열 -> (경도, 위도). 원문으로 못 찾으면 단순화한 주소로 한 번 더
+    시도하고, 그래도 없으면 None (호출부에서 실패가 아니라 "정보 없음"으로 취급)."""
+    result = _request_geocode(address)
+    if result is not None:
+        return result
+
+    simplified = _simplify_address(address)
+    if simplified and simplified != address:
+        result = _request_geocode(simplified)
+        if result is not None:
+            print(f"[tmap_api] 주소 단순화로 지오코딩 성공: '{address}' -> '{simplified}'")
+        return result
+    return None
 
 
 def find_transit_commute(start_lon: float, start_lat: float,
@@ -108,8 +140,9 @@ def find_transit_commute(start_lon: float, start_lat: float,
 
 def find_commute_from_address(company_lon: float, company_lat: float,
                                destination_address: str) -> dict | None:
-    """회사 좌표 -> 공고 주소 문자열까지의 대중교통 통근 정보. 지오코딩/경로 중 하나라도
-    실패하거나 결과가 없으면 None (main.py 쪽에서 실패로 취급해서 재시도 대상으로 둔다)."""
+    """회사 좌표 -> 공고 주소 문자열까지의 대중교통 통근 정보. 주소를 못 찾거나(정상적인
+    "정보 없음") 경로가 없으면 None을 반환하고, 이건 예외가 아니라서 main.py의 회로차단기
+    카운트에도 안 잡힌다 - 진짜 서비스 장애(타임아웃/5xx 등)만 예외로 올라간다."""
     dest = geocode_address(destination_address)
     if dest is None:
         return None
