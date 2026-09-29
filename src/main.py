@@ -397,6 +397,7 @@ def main() -> None:
     log_lines = []
     synced_count = 0
     new_notice_count = 0
+    commute_found_count = 0
     for notice_id, type_variants in all_by_notice.items():
         # 공고 하나 안의 타입들을 각각 분석(면적/분양가별로 실거래가 비교가 다르므로)한다.
         # 이건 매일 다시 계산한다 - RTMS 조회라 비용 부담이 없고, 사이트에 항상 최신
@@ -436,6 +437,8 @@ def main() -> None:
         # 통근시간은 주택형이 아니라 공고(단지) 주소 하나로 정해지므로 공고당 한 번만 조회.
         # RTMS처럼 매일 다시 계산해도 무료 한도(일 1,000건) 안에서 충분하다.
         commute = compute_commute(type_variants[0].get("address", ""), profile)
+        if commute:
+            commute_found_count += 1
 
         # 동기화가 실패해도(사이트 다운 등) 아래에서 seen_ids에는 그대로 추가한다 - 일시적
         # 전송 실패로 같은 공고를 매일 Claude로 재처리하며 비용을 낭비하지 않기 위함.
@@ -463,7 +466,7 @@ def main() -> None:
     RUN_LOG_FILE.write_text("\n".join(log_lines), encoding="utf-8")
     print(
         f"[main] 접수중 공고 {len(all_by_notice)}건 분석 완료(신규 {new_notice_count}건), "
-        f"사이트 동기화 {synced_count}건"
+        f"사이트 동기화 {synced_count}건, 통근시간 조회 성공 {commute_found_count}건"
     )
 
 
