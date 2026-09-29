@@ -30,6 +30,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 import cheongyak_api
 import rtms_api
+import tmap_api
 import analyzer
 import claude_advisor
 import site_sync
@@ -44,6 +45,11 @@ RUN_LOG_FILE = Path("run_log.jsonl")
 RTMS_CIRCUIT_BREAKER_THRESHOLD = 3
 _rtms_consecutive_failures = 0
 _rtms_circuit_open = False
+
+# TMAP(회사->공고지 대중교통 통근시간) 조회도 같은 이유로 회로차단기를 둔다.
+TMAP_CIRCUIT_BREAKER_THRESHOLD = 3
+_tmap_consecutive_failures = 0
+_tmap_circuit_open = False
 
 # 블로그 참고자료 검색(Claude 웹서치) on/off 스위치. 끄려면 False로.
 ENABLE_BLOG_SEARCH = True
@@ -244,6 +250,36 @@ def analyze_notice(notice: dict, profile: dict) -> tuple[dict, dict]:
     return margin, loan
 
 
+def compute_commute(address: str, profile: dict) -> dict | None:
+    """회사(profile.location) -> 공고 주소까지 대중교통 통근시간/거리. 공고 주소는 안
+    바뀌므로 "공고+주택형"이 아니라 "공고" 단위로 한 번만 호출한다. location 설정이 없거나
+    TMAP 회로가 열려있으면(연속 실패) None을 반환하고, main()에서는 None을 그냥 넘어간다."""
+    location = profile.get("location") or {}
+    company_lon = location.get("company_lng")
+    company_lat = location.get("company_lat")
+    if company_lon is None or company_lat is None or not address:
+        return None
+
+    global _tmap_consecutive_failures, _tmap_circuit_open
+    if _tmap_circuit_open:
+        return None
+
+    try:
+        commute = tmap_api.find_commute_from_address(company_lon, company_lat, address)
+        _tmap_consecutive_failures = 0
+        return commute
+    except Exception as e:  # noqa: BLE001
+        print(f"[main] 통근시간 조회 실패({address}): {e}")
+        _tmap_consecutive_failures += 1
+        if _tmap_consecutive_failures >= TMAP_CIRCUIT_BREAKER_THRESHOLD:
+            _tmap_circuit_open = True
+            print(
+                f"[main] 통근시간 조회 연속 {TMAP_CIRCUIT_BREAKER_THRESHOLD}회 실패 - "
+                "TMAP 장애로 보고 이번 실행에서는 통근시간 조회를 건너뜁니다"
+            )
+        return None
+
+
 def _to_int(value) -> int | None:
     if value is None:
         return None
@@ -397,9 +433,13 @@ def main() -> None:
             # 나중에 다시 켜면 그때부터 정상적으로 검색을 재개한다.
             references = None
 
+        # 통근시간은 주택형이 아니라 공고(단지) 주소 하나로 정해지므로 공고당 한 번만 조회.
+        # RTMS처럼 매일 다시 계산해도 무료 한도(일 1,000건) 안에서 충분하다.
+        commute = compute_commute(type_variants[0].get("address", ""), profile)
+
         # 동기화가 실패해도(사이트 다운 등) 아래에서 seen_ids에는 그대로 추가한다 - 일시적
         # 전송 실패로 같은 공고를 매일 Claude로 재처리하며 비용을 낭비하지 않기 위함.
-        if site_sync.sync_notice(notice_id, analyzed_types, references):
+        if site_sync.sync_notice(notice_id, analyzed_types, references, commute):
             synced_count += 1
 
         for v in type_variants:
@@ -414,6 +454,7 @@ def main() -> None:
                     for a in analyzed_types
                 ],
                 "references": references,
+                "commute": commute,
             },
             ensure_ascii=False,
         ))

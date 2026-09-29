@@ -1,5 +1,5 @@
 {
-  "_comment": "이 파일은 예시입니다. 실제 값을 채운 뒤 GitHub Secrets(MY_PROFILE_JSON)에만 붙여넣으세요. 절대 이 파일 자체를 실제 값으로 채워서 git commit 하지 마세요. (AI 추천 문구 기능을 뺀 뒤로 그 기능에서만 쓰이던 budget/subscription_score/location/avoid_building_age_over_years/purpose 필드는 코드에서 안 읽어서 지웠습니다.)",
+  "_comment": "이 파일은 예시입니다. 실제 값을 채운 뒤 GitHub Secrets(MY_PROFILE_JSON)에만 붙여넣으세요. 절대 이 파일 자체를 실제 값으로 채워서 git commit 하지 마세요. (AI 추천 문구 기능을 뺀 뒤로 그 기능에서만 쓰이던 budget/subscription_score/avoid_building_age_over_years/purpose 필드는 코드에서 안 읽어서 지웠습니다. location은 이후 통근시간(TMAP) 계산용으로 다시 쓰입니다.)",
 
   "income": {
     "annual_salary_krw": 10,
@@ -18,7 +18,8 @@
     "company_address": "서울특별시 중구 세종대로 00",
     "company_lat": 37.5665,
     "company_lng": 126.9780,
-    "max_commute_minutes": 60
+    "max_commute_minutes": 60,
+    "note": "company_address는 참고용 주석일 뿐 코드에서 안 읽습니다 - 실제 통근시간 계산(tmap_api.py)은 company_lat/company_lng 좌표를 직접 씁니다(TMAP 지오코딩 API를 매번 호출할 필요 없게). 좌표는 네이버지도/구글맵에서 회사 위치 우클릭하면 나오는 위경도를 넣으면 됩니다. max_commute_minutes는 현재 코드에서 필터링에 쓰이진 않고 참고용입니다."
   },
 
   "preferences": {

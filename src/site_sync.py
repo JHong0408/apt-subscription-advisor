@@ -28,6 +28,7 @@ def sync_notice(
     notice_id: str,
     analyzed_types: list[dict],
     references: list[dict] | None,
+    commute: dict | None = None,
 ) -> bool:
     """사이트에 성공적으로 저장됐으면 True, 실패했거나 미설정이면 False."""
     site_url = os.environ.get("SITE_URL")
@@ -48,6 +49,10 @@ def sync_notice(
         "reception_end_date": base.get("reception_end_date"),
         "notice_url": base.get("notice_url"),
         "references": references,
+        # TMAP 통근시간 조회가 이번 실행에서 실패했으면 None - 사이트 쪽에서 기존에
+        # 저장된 값을 지우지 않고 그대로 유지한다 (references 병합과 같은 이유).
+        "commute_minutes": commute.get("total_minutes") if commute else None,
+        "commute_distance_m": commute.get("total_distance_m") if commute else None,
         "types": [
             {
                 "house_ty": a["variant"].get("house_ty"),
