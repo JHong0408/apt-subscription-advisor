@@ -14,9 +14,9 @@ TMAP(SK Open API) 대중교통 API 클라이언트.
 일 1,000건 - 이 프로젝트는 하루 10~20건 수준이라 여유 충분. ODsay와 달리 6개월 만료 같은
 시한부 정책이 없는 상시 무료 한도라 GitHub Actions 자동화에 더 안전함.
 
-※ 응답 JSON 스키마(특히 geocode의 coordinateInfo 경로, 경로안내의 metaData.plan.itineraries
-경로)는 공식 문서 캡처가 불가능한 환경이라 외부 레퍼런스 기준으로 작성했다. 실제 실행 로그에서
-스키마가 다르면 조정이 필요하다 - 그래서 파싱 실패도 예외로 던지지 않고 None을 반환해서
+※ 지오코딩 응답 스키마(coordinateInfo.coordinate[].lat/lon)는 2026-09-30 실제 실행 로그로
+확인된 값이다. 경로안내(대중교통) 쪽 응답 스키마(metaData.plan.itineraries)는 아직 실제
+응답으로 검증 전이라 잘못됐을 수 있다 - 그래서 파싱 실패도 예외로 던지지 않고 None을 반환해서
 main.py가 다른 공고 처리를 계속할 수 있게 한다.
 """
 from __future__ import annotations
@@ -41,10 +41,10 @@ def _get_app_key() -> str:
     return key
 
 
-# 실제 테스트로 확인된 원인: "중림동 157-2번지 일원"처럼 청약홈 주소는 지번 뒤에
-# "번지"/"일원" 같은 서술어가 붙는데, TMAP fullAddrGeo는 이 서술어가 있으면 순수
-# 지번 주소("중림동 157-2")로도 400을 낸다. 반면 "동"까지만 자른 주소("중림동")도
-# 마찬가지로 400 - 이 API는 지번/도로명 없이 동 단위만으로는 매칭을 안 해주는 것으로 보인다.
+# "~공공주택지구 내 A-4블록"처럼 실제 지번/도로명이 아니라 사업지구 설명인 주소는
+# fullAddrGeo가 못 찾을 수 있다(예: "회천지구 A10-1BL" 자체는 매칭 안 됨). 괄호 설명/
+# 여러 동 나열/"번지"·"일원" 서술어를 걷어내고, 그래도 안 되면 시도+시군구+동 단위로
+# 근사치를 시도한다(동 단위 자체는 정상적으로 매칭됨 - 확인 완료).
 _ADDRESS_DESCRIPTIVE_WORDS = ["일원", "번지"]
 
 
@@ -59,9 +59,7 @@ def _strip_descriptive_words(address: str) -> str:
 
 def _simplify_address(address: str) -> str:
     """위 정리로도 안 되면(번지 자체가 없는 "~공공주택지구 내 A-4블록" 같은 사업지구
-    설명형 주소) 최후 수단으로 앞 3토큰(시도+시군구+동)만 남겨서 시도한다. 이 API가
-    동 단위 매칭 자체를 안 해주는 것으로 보여 이 폴백은 성공률이 낮지만, 비용이 거의
-    없어서 일단 시도는 해본다."""
+    설명형 주소) 최후 수단으로 앞 3토큰(시도+시군구+동)만 남겨서 시도한다."""
     addr = _strip_descriptive_words(address)
     tokens = addr.split()
     return " ".join(tokens[:3]).strip()
@@ -96,13 +94,13 @@ def _request_geocode(address: str) -> tuple[float, float] | None:
     resp.raise_for_status()
     data = resp.json()
 
-    candidates = (
-        data.get("coordinateInfo", {}).get("newAddressList", {}).get("newAddress", [])
-    )
+    # 2026-09-30 실제 응답으로 확인된 진짜 스키마: coordinateInfo.coordinate[].lat/lon
+    # (처음에 추정했던 newAddressList.newAddress/newLon/newLat는 틀린 스키마였음).
+    candidates = data.get("coordinateInfo", {}).get("coordinate", [])
     if not candidates:
         return None
     top = candidates[0]
-    return float(top["newLon"]), float(top["newLat"])
+    return float(top["lon"]), float(top["lat"])
 
 
 def geocode_address(address: str) -> tuple[float, float] | None:
