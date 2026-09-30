@@ -41,13 +41,28 @@ def _get_app_key() -> str:
     return key
 
 
-def _simplify_address(address: str) -> str:
-    """청약 공고 주소는 '~일원 (~공공주택지구 내 A-4블록)'처럼 실제 도로명 주소가 아니라
-    사업지구 설명인 경우가 많아 fullAddrGeo가 400(주소 매칭 실패)을 낸다. 괄호 설명/여러
-    동 나열을 걷어내고 앞 3토큰(시도+시군구+동 순서가 거의 항상 지켜짐)만 남겨서
-    "동 단위 근사치"로라도 지오코딩을 시도한다."""
+# 실제 테스트로 확인된 원인: "중림동 157-2번지 일원"처럼 청약홈 주소는 지번 뒤에
+# "번지"/"일원" 같은 서술어가 붙는데, TMAP fullAddrGeo는 이 서술어가 있으면 순수
+# 지번 주소("중림동 157-2")로도 400을 낸다. 반면 "동"까지만 자른 주소("중림동")도
+# 마찬가지로 400 - 이 API는 지번/도로명 없이 동 단위만으로는 매칭을 안 해주는 것으로 보인다.
+_ADDRESS_DESCRIPTIVE_WORDS = ["일원", "번지"]
+
+
+def _strip_descriptive_words(address: str) -> str:
+    """괄호 설명/여러 동 나열/"번지"·"일원" 서술어를 제거해서 순수 지번 주소 형태로 정리."""
     addr = re.sub(r"\([^)]*\)", " ", address)
     addr = addr.split(",")[0]
+    for word in _ADDRESS_DESCRIPTIVE_WORDS:
+        addr = addr.replace(word, " ")
+    return re.sub(r"\s+", " ", addr).strip()
+
+
+def _simplify_address(address: str) -> str:
+    """위 정리로도 안 되면(번지 자체가 없는 "~공공주택지구 내 A-4블록" 같은 사업지구
+    설명형 주소) 최후 수단으로 앞 3토큰(시도+시군구+동)만 남겨서 시도한다. 이 API가
+    동 단위 매칭 자체를 안 해주는 것으로 보여 이 폴백은 성공률이 낮지만, 비용이 거의
+    없어서 일단 시도는 해본다."""
+    addr = _strip_descriptive_words(address)
     tokens = addr.split()
     return " ".join(tokens[:3]).strip()
 
@@ -89,18 +104,22 @@ def _request_geocode(address: str) -> tuple[float, float] | None:
 
 
 def geocode_address(address: str) -> tuple[float, float] | None:
-    """도로명/지번 주소 문자열 -> (경도, 위도). 원문으로 못 찾으면 단순화한 주소로 한 번 더
-    시도하고, 그래도 없으면 None (호출부에서 실패가 아니라 "정보 없음"으로 취급)."""
+    """도로명/지번 주소 문자열 -> (경도, 위도). 원문으로 못 찾으면 순서대로:
+    1) "번지"/"일원" 서술어를 뗀 순수 지번 주소, 2) 시도+시군구+동 3토큰 근사치
+    를 시도하고, 그래도 없으면 None (호출부에서 실패가 아니라 "정보 없음"으로 취급)."""
     result = _request_geocode(address)
     if result is not None:
         return result
 
-    simplified = _simplify_address(address)
-    if simplified and simplified != address:
-        result = _request_geocode(simplified)
+    tried: set[str] = {address}
+    for candidate in (_strip_descriptive_words(address), _simplify_address(address)):
+        if not candidate or candidate in tried:
+            continue
+        tried.add(candidate)
+        result = _request_geocode(candidate)
         if result is not None:
-            print(f"[tmap_api] 주소 단순화로 지오코딩 성공: '{address}' -> '{simplified}'")
-        return result
+            print(f"[tmap_api] 주소 정리 후 지오코딩 성공: '{address}' -> '{candidate}'")
+            return result
     return None
 
 
