@@ -70,6 +70,9 @@ def _request_geocode(address: str) -> tuple[float, float] | None:
         headers={"appKey": _get_app_key(), "Accept": "application/json"},
         timeout=15,
     )
+    # 임시 진단용: 응답 스키마를 실제로 본 적이 없어서 추정만으로 파싱하고 있다 - 원인
+    # 파악되면 이 print는 지운다.
+    print(f"[tmap_api][추적] geocode '{address}' -> status={resp.status_code}, body={resp.text[:500]!r}")
     if resp.status_code == 400:
         # TMAP 쪽 장애가 아니라 "이 문자열로는 주소를 못 찾음" - 회로차단기 대상 아님.
         return None
@@ -123,6 +126,8 @@ def find_transit_commute(start_lon: float, start_lat: float,
         },
         timeout=15,
     )
+    # 임시 진단용: 위와 같은 이유.
+    print(f"[tmap_api][추적] transit routes ({start_lon},{start_lat})->({end_lon},{end_lat}) -> status={resp.status_code}, body={resp.text[:500]!r}")
     resp.raise_for_status()
     data = resp.json()
 
