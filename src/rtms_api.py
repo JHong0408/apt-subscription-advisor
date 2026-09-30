@@ -71,9 +71,18 @@ GYEONGGI_LAWD_CD = {
     "양평군": "41830",
 }
 
-# 서울 + 경기 통합 조회용. main.py/cheongyak_api.py에서 뽑아낸 "지역 키"
-# (예: "강북구", "수원시 영통구", "부천시")로 바로 조회할 수 있게 합쳐 둠.
-ALL_LAWD_CD = {**SEOUL_LAWD_CD, **GYEONGGI_LAWD_CD}
+# 인천 8구 2군 중 2026-07-01 행정구역 개편(제물포구/영종구/검단구 신설)의 영향을 안
+# 받은 6구+2군만 지원. 신설 3구는 법정동코드가 아직 검증 안 돼서 뺐다
+# (cheongyak_api.INCHEON_GU_LIST 주석 참고).
+INCHEON_LAWD_CD = {
+    "미추홀구": "28177", "연수구": "28185", "남동구": "28200",
+    "부평구": "28237", "계양구": "28245", "서구": "28260",
+    "강화군": "28710", "옹진군": "28720",
+}
+
+# 서울 + 경기 + 인천 통합 조회용. main.py/cheongyak_api.py에서 뽑아낸 "지역 키"
+# (예: "강북구", "수원시 영통구", "부천시", "연수구")로 바로 조회할 수 있게 합쳐 둠.
+ALL_LAWD_CD = {**SEOUL_LAWD_CD, **GYEONGGI_LAWD_CD, **INCHEON_LAWD_CD}
 
 
 class RtmsAPIError(RuntimeError):

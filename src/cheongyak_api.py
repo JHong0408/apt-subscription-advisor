@@ -64,6 +64,16 @@ GYEONGGI_DISTRICT_CITIES = {
     "용인시": ["처인구", "기흥구", "수지구"],
 }
 
+# 인천 8구 2군 중 2026-07-01 행정구역 개편(중구+동구->제물포구, 서구 일부->검단구,
+# 중구 영종도->영종구 분리 신설)의 영향을 안 받은 6구+2군만 우선 지원한다. 신설 3구는
+# 법정동코드(LAWD_CD)가 아직 확정 검증이 안 돼서(생긴 지 3개월), 잘못된 코드로 RTMS를
+# 조회해 틀린 데이터를 주느니 일단 지역 필터만 통과시키고 실거래가 조회는 건너뛴다
+# (rtms_api.extract_region()이 None을 반환하면 analyze_notice()가 자동으로 스킵함).
+INCHEON_GU_LIST = [
+    "미추홀구", "연수구", "남동구", "부평구", "계양구", "서구",
+]
+INCHEON_GUN_LIST = ["강화군", "옹진군"]
+
 
 class CheongyakAPIError(RuntimeError):
     pass
@@ -155,6 +165,10 @@ def is_gyeonggi(address: str) -> bool:
     return "경기" in (address or "")
 
 
+def is_incheon(address: str) -> bool:
+    return "인천" in (address or "")
+
+
 def extract_gu(address: str) -> str | None:
     """주소 문자열에서 서울 자치구 이름을 추출. 매칭 실패 시 None."""
     if not address:
@@ -185,12 +199,25 @@ def extract_gyeonggi_region(address: str) -> str | None:
     return None
 
 
+def extract_incheon_region(address: str) -> str | None:
+    """주소 문자열에서 인천 구/군 이름을 추출. 신설 3구(제물포/영종/검단)나 미지원
+    옛 구(중구/동구)는 매칭되지 않아 None -> RTMS 조회는 건너뛰고 지역필터만 통과."""
+    if not address:
+        return None
+    for name in INCHEON_GU_LIST + INCHEON_GUN_LIST:
+        if name in address:
+            return name
+    return None
+
+
 def extract_region(address: str) -> str | None:
-    """서울/경기 구분 없이, rtms_api.ALL_LAWD_CD에 바로 쓸 수 있는 지역 키를 추출."""
+    """서울/경기/인천 구분 없이, rtms_api.ALL_LAWD_CD에 바로 쓸 수 있는 지역 키를 추출."""
     if is_seoul(address):
         return extract_gu(address)
     if is_gyeonggi(address):
         return extract_gyeonggi_region(address)
+    if is_incheon(address):
+        return extract_incheon_region(address)
     return None
 
 
@@ -225,6 +252,9 @@ def classify_region_type(address: str) -> str:
         region = extract_gyeonggi_region(address)
         return "regulated" if region in REGULATED_GYEONGGI_REGIONS else "capital_nonregulated"
 
+    if is_incheon(address):
+        return "capital_nonregulated"  # 10.15 대책 규제지역 목록에 인천은 없음
+
     return "local"
 
 
@@ -232,8 +262,9 @@ def is_target_region(address: str, prefer_regions: list[str] | None = None) -> b
     """profile["preferences"]["prefer_regions"]에 맞춰 주소가 관심 지역인지 판단.
 
     prefer_regions에 "서울"/"서울특별시"가 있으면 서울 주소를, "경기"/"경기도"가
-    있으면 경기 주소를 허용. 값이 없거나 인식 못하는 값만 있으면 서울+경기 전체를
-    기본값으로 허용한다.
+    있으면 경기 주소를, "인천"/"인천광역시"가 있으면 인천 주소를 허용. 값이 없거나
+    인식 못하는 값만 있으면 서울+경기 전체를 기본값으로 허용한다(인천은 명시적으로
+    넣어야만 포함됨).
     """
     if not address:
         return False
@@ -245,6 +276,8 @@ def is_target_region(address: str, prefer_regions: list[str] | None = None) -> b
             checks.append(is_seoul(address))
         elif region in ("경기", "경기도"):
             checks.append(is_gyeonggi(address))
+        elif region in ("인천", "인천광역시"):
+            checks.append(is_incheon(address))
 
     if checks:
         return any(checks)

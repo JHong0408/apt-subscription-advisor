@@ -250,10 +250,24 @@ def analyze_notice(notice: dict, profile: dict) -> tuple[dict, dict]:
     return margin, loan
 
 
-def compute_commute(address: str, profile: dict) -> dict | None:
+def _commute_seen_key(notice_id: str) -> str:
+    return f"commute:{notice_id}"
+
+
+def compute_commute(notice_id: str, address: str, profile: dict, seen_ids: set[str]) -> dict | None:
     """회사(profile.location) -> 공고 주소까지 대중교통 통근시간/거리. 공고 주소는 안
-    바뀌므로 "공고+주택형"이 아니라 "공고" 단위로 한 번만 호출한다. location 설정이 없거나
-    TMAP 회로가 열려있으면(연속 실패) None을 반환하고, main()에서는 None을 그냥 넘어간다."""
+    바뀌므로 "공고+주택형"이 아니라 "공고" 단위로 한 번만 호출한다.
+
+    TMAP 무료 한도가 "대중교통" API 그룹만 하루 10건으로 매우 빠듯하다(2026-09-30
+    실제 사용량 알림 문자로 확인 - RTMS처럼 매일 재계산했다간 공고 몇 건만 있어도
+    바로 소진된다). 그래서 한 번 성공적으로 계산된 공고는 seen_ids에 기록해두고 다시
+    계산하지 않는다 - 신규 공고이거나 지난번에 실패(주소 못 찾음/장애)한 공고만 매일
+    재시도한다. location 설정이 없거나 TMAP 회로가 열려있으면(연속 실패) None을
+    반환하고, main()에서는 None을 그냥 넘어간다(사이트 쪽은 기존 값을 그대로 유지)."""
+    commute_key = _commute_seen_key(notice_id)
+    if commute_key in seen_ids:
+        return None
+
     location = profile.get("location") or {}
     company_lon = location.get("company_lng")
     company_lat = location.get("company_lat")
@@ -267,6 +281,8 @@ def compute_commute(address: str, profile: dict) -> dict | None:
     try:
         commute = tmap_api.find_commute_from_address(company_lon, company_lat, address)
         _tmap_consecutive_failures = 0
+        if commute is not None:
+            seen_ids.add(commute_key)
         return commute
     except Exception as e:  # noqa: BLE001
         print(f"[main] 통근시간 조회 실패({address}): {e}")
@@ -442,8 +458,8 @@ def main() -> None:
             references = None
 
         # 통근시간은 주택형이 아니라 공고(단지) 주소 하나로 정해지므로 공고당 한 번만 조회.
-        # RTMS처럼 매일 다시 계산해도 무료 한도(일 1,000건) 안에서 충분하다.
-        commute = compute_commute(type_variants[0].get("address", ""), profile)
+        # TMAP 무료 한도가 하루 10건뿐이라 신규/실패건만 재시도한다 (compute_commute 참고).
+        commute = compute_commute(notice_id, type_variants[0].get("address", ""), profile, seen_ids)
         if commute:
             commute_found_count += 1
 
@@ -473,7 +489,7 @@ def main() -> None:
     RUN_LOG_FILE.write_text("\n".join(log_lines), encoding="utf-8")
     print(
         f"[main] 접수중 공고 {len(all_by_notice)}건 분석 완료(신규 {new_notice_count}건), "
-        f"사이트 동기화 {synced_count}건, 통근시간 조회 성공 {commute_found_count}건"
+        f"사이트 동기화 {synced_count}건, 통근시간 신규 조회 성공 {commute_found_count}건"
     )
 
 
