@@ -261,6 +261,21 @@ RECEPTION_DATE_FIELDS = {
 }
 DEFAULT_RECEPTION_DATE_FIELDS = ("SUBSCRPT_RCEPT_BGNDE", "SUBSCRPT_RCEPT_ENDDE")
 
+
+def _normalize_date(value: str | None) -> str | None:
+    """청약홈 API가 엔드포인트마다 날짜를 다른 형식으로 준다 - apt_general은
+    "2026-08-03"(하이픈 있음), 무순위/임의공급은 "20260928"(하이픈 없음). apt-advisor
+    (Cloudflare Worker)는 이 값을 SQLite에서 문자열로 그대로 비교해서 마감 여부를
+    판정하는데, 하이픈 없는 날짜는 5번째 글자('0')가 하이픈 있는 날짜의 5번째 글자('-')
+    보다 ASCII상 항상 커서 "더 미래"로 잘못 판정되고, 그 결과 접수 마감된 공고가 영원히
+    안 지워지는 버그로 실제 확인됨(2026-09-30). 그래서 원본 단계에서 ISO(YYYY-MM-DD)로
+    통일한다."""
+    if not value or "-" in value:
+        return value
+    if len(value) == 8 and value.isdigit():
+        return f"{value[0:4]}-{value[4:6]}-{value[6:8]}"
+    return value
+
 # 사이트에서 "일반분양(1·2순위·특공)"과 "무순위/임의공급"을 탭으로 나눠 보여주기 위한 분류.
 SUPPLY_CATEGORIES = {
     "apt_general": "general",
@@ -288,11 +303,11 @@ def parse_notice(raw: dict, endpoint_key: str = "apt_remainder") -> dict:
         "supply_category": SUPPLY_CATEGORIES.get(endpoint_key, "remainder"),
         "recruit_date": raw.get("RCRIT_PBLANC_DE"),
         "notice_url": raw.get("PBLANC_URL"),
-        # 신청 접수 시작/종료일. 날짜 형식도 엔드포인트마다 다름(예: YYYY-MM-DD vs YYYYMMDD) -
-        # 화면 표시는 apt-advisor 사이트 쪽에서 통일해서 처리한다. 종료일은 main.py에서 이미
-        # 마감된 공고를 걸러낼 때도 씀.
-        "reception_start_date": raw.get(start_field),
-        "reception_end_date": raw.get(end_field),
+        # 신청 접수 시작/종료일. 종료일은 main.py에서 이미 마감된 공고를 걸러낼 때도,
+        # apt-advisor(Cloudflare Worker)가 문자열 비교로 마감 판정할 때도 쓰이므로
+        # 여기서 ISO(YYYY-MM-DD)로 통일해서 내려보낸다(_normalize_date 주석 참고).
+        "reception_start_date": _normalize_date(raw.get(start_field)),
+        "reception_end_date": _normalize_date(raw.get(end_field)),
         # 아래 둘은 이 엔드포인트에 없음 - fetch_models()로 채워지기 전까지는 None
         "area_sqm": None,
         "price_manwon": None,

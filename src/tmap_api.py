@@ -14,10 +14,9 @@ TMAP(SK Open API) 대중교통 API 클라이언트.
 일 1,000건 - 이 프로젝트는 하루 10~20건 수준이라 여유 충분. ODsay와 달리 6개월 만료 같은
 시한부 정책이 없는 상시 무료 한도라 GitHub Actions 자동화에 더 안전함.
 
-※ 지오코딩 응답 스키마(coordinateInfo.coordinate[].lat/lon)는 2026-09-30 실제 실행 로그로
-확인된 값이다. 경로안내(대중교통) 쪽 응답 스키마(metaData.plan.itineraries)는 아직 실제
-응답으로 검증 전이라 잘못됐을 수 있다 - 그래서 파싱 실패도 예외로 던지지 않고 None을 반환해서
-main.py가 다른 공고 처리를 계속할 수 있게 한다.
+※ 지오코딩(coordinateInfo.coordinate[].lat/lon)과 경로안내(metaData.plan.itineraries[].
+totalTime(초)/totalDistance) 응답 스키마 모두 2026-09-30 실제 실행 로그로 검증 완료.
+파싱 실패는 예외로 던지지 않고 None을 반환해서 main.py가 다른 공고 처리를 계속할 수 있게 한다.
 """
 from __future__ import annotations
 
@@ -85,9 +84,6 @@ def _request_geocode(address: str) -> tuple[float, float] | None:
         headers={"appKey": _get_app_key(), "Accept": "application/json"},
         timeout=15,
     )
-    # 임시 진단용: 응답 스키마를 실제로 본 적이 없어서 추정만으로 파싱하고 있다 - 원인
-    # 파악되면 이 print는 지운다.
-    print(f"[tmap_api][추적] geocode '{address}' -> status={resp.status_code}, body={resp.text[:500]!r}")
     if resp.status_code == 400:
         # TMAP 쪽 장애가 아니라 "이 문자열로는 주소를 못 찾음" - 회로차단기 대상 아님.
         return None
@@ -145,11 +141,11 @@ def find_transit_commute(start_lon: float, start_lat: float,
         },
         timeout=15,
     )
-    # 임시 진단용: 위와 같은 이유.
-    print(f"[tmap_api][추적] transit routes ({start_lon},{start_lat})->({end_lon},{end_lat}) -> status={resp.status_code}, body={resp.text[:500]!r}")
     resp.raise_for_status()
     data = resp.json()
 
+    # 2026-09-30 실제 응답으로 확인된 스키마: metaData.plan.itineraries[].totalTime(초)/
+    # totalDistance/legs.
     itineraries = data.get("metaData", {}).get("plan", {}).get("itineraries", [])
     if not itineraries:
         return None
