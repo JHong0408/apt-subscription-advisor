@@ -128,6 +128,11 @@ def collect_candidate_notices(prefer_regions: list[str] | None = None) -> list[d
             notice = cheongyak_api.parse_notice(raw, endpoint_key)
             notice["_endpoint_key"] = endpoint_key  # 주택형 상세 조회 시 어느 Mdl 엔드포인트를 쓸지 기억
 
+            # 임시 진단용: "당수" 공고가 어느 필터에서 걸리는지 원본 그대로 확인.
+            # 원인 파악되면 이 블록은 지운다.
+            if "당수" in (notice.get("house_name") or ""):
+                print(f"[main][추적:당수] endpoint={endpoint_key}, notice={notice!r}")
+
             if not cheongyak_api.is_target_region(notice.get("address", ""), prefer_regions):
                 out_of_region_count += 1
                 continue
