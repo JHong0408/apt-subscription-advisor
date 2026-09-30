@@ -74,7 +74,9 @@ def _request_geocode(address: str) -> tuple[float, float] | None:
         "version": 1,
         "fullAddr": address,
         "coordType": "WGS84GEO",
-        "addressFlag": "F02",
+        # F00: 지번(구주소)+도로명(새주소) 둘 다 허용. 청약홈 주소가 지번/도로명 섞여
+        # 있는데, F02(도로명 전용)로 잘못 지정했던 게 이전까지 전부 400 났던 진짜 원인.
+        "addressFlag": "F00",
         "page": 1,
         "count": 1,
         "format": "json",
