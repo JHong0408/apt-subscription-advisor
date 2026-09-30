@@ -113,6 +113,11 @@ def collect_candidate_notices(prefer_regions: list[str] | None = None) -> list[d
     expired_count = 0
     out_of_region_count = 0
     raw_total = 0
+    # 임시 진단용: 인천 지원 추가가 제대로 됐는지(지역필터에서 안 빠지는지) 확인.
+    # 확인되면 이 블록은 지운다.
+    incheon_raw_count = 0
+    incheon_expired_count = 0
+    incheon_candidate_count = 0
 
     for endpoint_key in ("apt_general", "apt_remainder", "arbitrary_supply"):
         try:
@@ -127,18 +132,30 @@ def collect_candidate_notices(prefer_regions: list[str] | None = None) -> list[d
         for raw in raw_list:
             notice = cheongyak_api.parse_notice(raw, endpoint_key)
             notice["_endpoint_key"] = endpoint_key  # 주택형 상세 조회 시 어느 Mdl 엔드포인트를 쓸지 기억
+            is_incheon_notice = cheongyak_api.is_incheon(notice.get("address", ""))
+            if is_incheon_notice:
+                incheon_raw_count += 1
 
             if not cheongyak_api.is_target_region(notice.get("address", ""), prefer_regions):
                 out_of_region_count += 1
                 continue
             if not is_reception_open(notice, today):
                 expired_count += 1
+                if is_incheon_notice:
+                    incheon_expired_count += 1
                 continue
             candidates.append(notice)
+            if is_incheon_notice:
+                incheon_candidate_count += 1
 
     print(
         f"[main] 원본 총 {raw_total}건 -> 지역 필터 제외 {out_of_region_count}건, "
         f"접수 마감 제외 {expired_count}건, 최종 후보 {len(candidates)}건"
+    )
+    print(
+        f"[main][추적:인천] 주소에 '인천' 포함된 원본 {incheon_raw_count}건 -> "
+        f"접수 마감 제외 {incheon_expired_count}건, 최종 후보 {incheon_candidate_count}건 "
+        f"(지역필터로 빠진 건 = {incheon_raw_count - incheon_expired_count - incheon_candidate_count}건이어야 0)"
     )
 
     return candidates
