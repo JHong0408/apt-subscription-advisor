@@ -376,6 +376,13 @@ def main() -> None:
     min_area = profile.get("preferences", {}).get("min_area_sqm", 46)
     prefer_regions = profile.get("preferences", {}).get("prefer_regions", ["서울", "경기"])
     print(f"[main][추적] 실제 사용되는 prefer_regions={prefer_regions!r}")
+    # MY_PROFILE_JSON 시크릿은 GitHub에서 저장 후 값을 다시 볼 수 없어서(write-only),
+    # 실제로 뭐가 들어갔는지 확인할 유일한 방법이 이 로그다. 좌표는 민감정보가 아니라 그대로 찍는다.
+    _location = profile.get("location") or {}
+    print(
+        f"[main][추적] location 설정: company_lat={_location.get('company_lat')!r}, "
+        f"company_lng={_location.get('company_lng')!r}"
+    )
 
     notices = collect_candidate_notices(prefer_regions)
 
