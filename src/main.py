@@ -52,7 +52,7 @@ _tmap_consecutive_failures = 0
 _tmap_circuit_open = False
 
 # 블로그 참고자료 검색(Claude 웹서치) on/off 스위치. 끄려면 False로.
-ENABLE_BLOG_SEARCH = True
+ENABLE_BLOG_SEARCH = False
 
 KST = timezone(timedelta(hours=9))
 
