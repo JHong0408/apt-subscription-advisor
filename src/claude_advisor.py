@@ -10,7 +10,7 @@ import re
 import requests
 
 ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
-MODEL = "claude-sonnet-5"
+MODEL = "claude-sonnet-5-5"
 
 
 class ClaudeAdvisorError(RuntimeError):
