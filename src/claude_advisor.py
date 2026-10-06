@@ -67,7 +67,12 @@ def _find_blog_reference(house_name: str, domain: str) -> dict | None:
             }],
             "messages": [{"role": "user", "content": prompt}],
         },
-        timeout=55,  # 웹검색이 포함돼서 일반 텍스트 응답보다 오래 걸릴 수 있음
+        # 웹검색(최대 3회) 포함이라 일반 텍스트 응답보다 오래 걸린다. 타임아웃을 너무
+        # 짧게 잡으면 서버에서는 검색/토큰 생성이 이미 끝나가는데(=비용 이미 발생)
+        # 응답을 못 받아 포기하고, 다음 실행에서 같은 검색을 처음부터 다시 해서 같은
+        # 비용을 중복 지출하게 된다 - 그래서 넉넉하게 90초로 늘림(homedubu.com이 특히
+        # 자주 타임아웃나던 걸 보고 2026-10-06 조정).
+        timeout=90,
     )
     resp.raise_for_status()  # 실패하면 requests.HTTPError를 그대로 던짐 - 호출부에서 처리
     data = resp.json()

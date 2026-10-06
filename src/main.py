@@ -343,18 +343,42 @@ def _record_ref_result(domain: str, notice_id: str, result: dict | None, seen_id
         seen_ids.add(once_key)  # 첫 "없음" - 아직 확정하지 않고 재시도 대상으로 남김
 
 
+def _ref_failed_once_key(domain: str, notice_id: str) -> str:
+    """타임아웃/API 오류 등 "실패"가 처음 한 번 있었음을 기록하는 임시 키.
+
+    "없음"과 달리 실패는 원래 카운트를 안 해서 homedubu.com처럼 자주 타임아웃나는
+    도메인이 공고가 마감될 때까지 매일 무제한 재시도되며 Claude 비용을 계속
+    소모하는 문제가 있었다(2026-10-06 실제 사용량으로 확인). 그래서 "없음"과 같은
+    2회 연속 규칙을 실패에도 적용한다 - 단 "없음"(검색 자체는 성공) 카운트와는
+    별도로 추적한다(원인이 다르므로 섞지 않음).
+    """
+    return f"ref-failed-once:{domain}:{notice_id}"
+
+
+def _record_ref_failure(domain: str, notice_id: str, house_name: str, seen_ids: set[str]) -> None:
+    once_key = _ref_failed_once_key(domain, notice_id)
+    if once_key in seen_ids:
+        # 2회 연속 실패 - 3번째는 시도하지 않고 포기(최종 확정 처리)
+        seen_ids.add(_ref_seen_key(domain, notice_id))
+        print(f"[main] {domain} 검색 연속 2회 실패 - 포기하고 더 이상 재시도하지 않습니다 ({house_name})")
+    else:
+        seen_ids.add(once_key)
+        print(f"[main] {domain} 검색 1회 실패 - 다음 실행에서 재시도 ({house_name})")
+
+
 def fetch_blog_references(house_name: str, notice_id: str, seen_ids: set[str]) -> tuple[dict | None, dict | None]:
     """mhb-blog/homedubu 참고자료를 동시에 검색해서 (mhb_reference, homedubu_reference)로 반환.
 
-    이미 최종 확정(글을 찾았거나, "없음"이 두 번 연속 나옴)된 도메인은 seen_ids에
-    ref:{domain}:{notice_id}로 기록돼 있어서 건너뛴다. 타임아웃/API 오류로 실패했거나
-    "없음"이 처음 한 번만 나온 도메인은 최종 확정하지 않으므로 다음 실행에서 그
-    도메인만 다시 시도된다 - 이미 확정된 다른 도메인 참고자료를 헛되이 다시 검색하며
-    비용을 낭비하지 않는다 (자세한 확정 규칙은 _record_ref_result 참고).
+    이미 최종 확정된 도메인은 seen_ids에 ref:{domain}:{notice_id}로 기록돼 있어서
+    건너뛴다. 확정되는 경우: (1) 글을 찾음, (2) "없음"이 2회 연속, (3) 타임아웃/API
+    오류 같은 실패가 2회 연속(3번째부턴 포기) - (1)(2)는 _record_ref_result, (3)은
+    _record_ref_failure 참고. 처음 한 번만 실패/없음인 도메인은 다음 실행에서
+    재시도된다 - 이미 확정된 다른 도메인 참고자료를 헛되이 다시 검색하며 비용을
+    낭비하지 않는다.
 
-    둘 다 Claude API에 웹검색 포함 요청을 보내는데(최악의 경우 각각 최대 55초),
-    순차로 하면 공고 하나당 최대 110초까지 걸려서 job 타임아웃 위험이 커진다.
-    서로 완전히 독립적인 조회라 동시에 실행해서 대기 시간을 절반(최대 55초)으로 줄인다.
+    둘 다 Claude API에 웹검색 포함 요청을 보내는데(최악의 경우 각각 최대 90초),
+    순차로 하면 공고 하나당 최대 180초까지 걸려서 job 타임아웃 위험이 커진다.
+    서로 완전히 독립적인 조회라 동시에 실행해서 대기 시간을 절반(최대 90초)으로 줄인다.
     """
     mhb_key = _ref_seen_key(MHB_DOMAIN, notice_id)
     homedubu_key = _ref_seen_key(HOMEDUBU_DOMAIN, notice_id)
@@ -374,14 +398,16 @@ def fetch_blog_references(house_name: str, notice_id: str, seen_ids: set[str]) -
                 mhb_reference = futures["mhb"].result()
                 _record_ref_result(MHB_DOMAIN, notice_id, mhb_reference, seen_ids)
             except Exception as e:  # noqa: BLE001
-                print(f"[main] mhb-blog 참고 자료 검색 실패({house_name}): {e} - 다음 실행에서 재시도")
+                print(f"[main] mhb-blog 참고 자료 검색 실패({house_name}): {e}")
+                _record_ref_failure(MHB_DOMAIN, notice_id, house_name, seen_ids)
 
         if "homedubu" in futures:
             try:
                 homedubu_reference = futures["homedubu"].result()
                 _record_ref_result(HOMEDUBU_DOMAIN, notice_id, homedubu_reference, seen_ids)
             except Exception as e:  # noqa: BLE001
-                print(f"[main] homedubu 참고 자료 검색 실패({house_name}): {e} - 다음 실행에서 재시도")
+                print(f"[main] homedubu 참고 자료 검색 실패({house_name}): {e}")
+                _record_ref_failure(HOMEDUBU_DOMAIN, notice_id, house_name, seen_ids)
 
     return mhb_reference, homedubu_reference
 
