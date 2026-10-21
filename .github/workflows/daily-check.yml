@@ -2,12 +2,15 @@ name: Daily Apartment Subscription Check
 
 on:
   schedule:
-    # 매일 한국시간(KST, UTC+9) 오전 10시 = UTC 당일 01:00
+    # 매일 한국시간(KST, UTC+9) 오전 10시 35분 = UTC 당일 01:35
     # (오전 8시에서 늦춘 이유: 청약 공고가 9시 이후에 올라오는 경우가 있어서.
     #  부수 효과로 UTC 날짜와 KST 날짜가 같은 달력일이 되어, main.py의 today_kst()가
     #  KST 기준 "오늘"과 어긋나지 않게 됨 - 예전 08:00 KST 스케줄은 UTC로는 전날 23:00이라
     #  date.today()가 하루 전 날짜를 반환했었음)
-    - cron: '0 1 * * *'
+    # 분을 35분으로 잡은 이유: GitHub Actions 스케줄은 정각/정시 30분(:00, :30)처럼
+    # 전 세계적으로 몰리는 시각에 큐가 밀려서 지연되기 쉽다고 공식 문서에 나와 있음
+    # (2026-10-18~20에 실제로 4시간 넘게 지연되는 걸 겪고 확인함) - 그래서 둘 다 피함.
+    - cron: '35 1 * * *'
   workflow_dispatch: {}  # 필요할 때 수동으로도 실행 가능 (Actions 탭에서 Run workflow)
 
 permissions:
